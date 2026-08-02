@@ -1,0 +1,180 @@
+import 'dotenv/config';
+import express from 'express';
+import cors from 'cors';
+import { createServer } from 'http';
+import { Server } from 'socket.io';
+import path from 'path';
+import fs from 'fs';
+import { initDb, getDb, getSetting, setSetting } from './database.js';
+import { analyzeMessage, getSmartAnswer } from './analyzer.js';
+
+const PORT = process.env.PORT || 3001;
+const app = express();
+const httpServer = createServer(app);
+const io = new Server(httpServer, { cors: { origin: '*' } });
+
+app.use(cors({ origin: '*' }));
+app.use(express.json());
+
+// Simple session
+const sessions = {};
+app.use((req, res, next) => {
+  let sid = req.headers.cookie?.split('sid=')[1]?.split(';')[0];
+  if (!sid || !sessions[sid]) { sid = Math.random().toString(36).substring(2); sessions[sid] = {}; res.cookie('sid', sid, { httpOnly: true, maxAge: 7*24*60*60*1000 }); }
+  req.session = sessions[sid];
+  next();
+});
+
+// Health
+app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
+
+// Auth
+app.post('/api/auth/login', (req, res) => {
+  const { password } = req.body;
+  if (password === (getSetting('app_password') || '1234')) { req.session.auth = true; return res.json({ success: true }); }
+  res.status(401).json({ error: 'Wrong password' });
+});
+app.post('/api/auth/logout', (req, res) => { req.session.auth = false; res.json({ success: true }); });
+app.get('/api/auth/check', (req, res) => res.json({ isAuthenticated: req.session?.auth === true }));
+
+// Auth middleware
+app.use('/api', (req, res, next) => {
+  if (req.path === '/health' || req.path === '/auth/login' || req.path === '/auth/check') return next();
+  if (!req.session?.auth) return res.status(401).json({ error: 'Unauthorized' });
+  next();
+});
+
+// Change password
+app.post('/api/auth/password', (req, res) => {
+  const { newPassword } = req.body;
+  if (newPassword) setSetting('app_password', newPassword);
+  res.json({ success: true });
+});
+
+// Chat endpoint - process message
+app.post('/api/chat', (req, res) => {
+  const { message } = req.body;
+  if (!message) return res.status(400).json({ error: 'Message required' });
+
+  const db = getDb();
+  const text = message.trim();
+
+  // Check if it's a question
+  const questionWords = ['كام', 'قد ايه', 'رصيد', 'متبقي', 'باقي', 'أكتر', 'اكثر', 'تفصيل', 'تفاصيل', 'عدد', 'اليوم', 'نهارده', 'إيه', 'ايه', 'ازاي', 'ليه', 'امتى'];
+  const isQuestion = questionWords.some(w => text.includes(w)) || text.includes('?') || text.includes('؟');
+
+  if (isQuestion) {
+    const transactions = db.prepare('SELECT * FROM transactions ORDER BY source_timestamp DESC').all();
+    const answer = getSmartAnswer(text, transactions);
+    return res.json({ type: 'answer', message: answer });
+  }
+
+  // Analyze as expense
+  const analysis = analyzeMessage(text);
+  const monthKey = new Date().toISOString().slice(0, 7);
+
+  db.prepare(`
+    INSERT INTO transactions (raw_message, amount, type, category, description, month_key, needs_review, confidence)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(text, analysis.amount, analysis.type, analysis.category, analysis.description, monthKey, analysis.needsReview, analysis.confidence);
+
+  // Build response
+  const emoji = analysis.type === 'expense' ? '💸' : '🏧';
+  const typeAr = analysis.type === 'expense' ? 'مصروف' : 'سحب';
+  const categoryNames = { work: 'شغل', home: 'بيت', transport: 'مواصلات', health: 'صحة', education: 'تعليم', bills: 'فواتير', shopping: 'تسوق', other: 'أخرى' };
+  const catAr = categoryNames[analysis.category] || 'أخرى';
+  const reviewNote = analysis.needsReview ? '\n⚠️ محتاج مراجعة (مفيش مبلغ واضح)' : '';
+
+  const responseMessage = `${emoji} ${typeAr}: ${analysis.amount || '?'} ج.م\n📂 ${catAr}\n📝 ${analysis.description}${reviewNote}`;
+
+  io.emit('new_transaction', { ...analysis, raw_message: text, month_key: monthKey });
+  res.json({ type: 'transaction', message: responseMessage, data: analysis });
+});
+
+// Get transactions
+app.get('/api/transactions', (req, res) => {
+  const db = getDb();
+  const { type, category, month, search, needs_review, page = 1, limit = 50 } = req.query;
+  let query = 'SELECT * FROM transactions WHERE 1=1';
+  const params = [];
+  if (type) { query += ' AND type = ?'; params.push(type); }
+  if (category) { query += ' AND category = ?'; params.push(category); }
+  if (month) { query += ' AND month_key = ?'; params.push(month); }
+  if (search) { query += ' AND (raw_message LIKE ? OR description LIKE ?)'; params.push(`%${search}%`, `%${search}%`); }
+  if (needs_review === 'true') query += ' AND needs_review = 1';
+  
+  const total = db.prepare(query.replace('SELECT *', 'SELECT COUNT(*) as t')).get(...params).t;
+  query += ' ORDER BY source_timestamp DESC LIMIT ? OFFSET ?';
+  params.push(parseInt(limit), (parseInt(page)-1)*parseInt(limit));
+  
+  res.json({ transactions: db.prepare(query).all(...params), pagination: { page: parseInt(page), total, pages: Math.ceil(total/parseInt(limit)) } });
+});
+
+// Summary
+app.get('/api/summary', (req, res) => {
+  const db = getDb();
+  const monthKey = req.query.month || new Date().toISOString().slice(0, 7);
+  const totals = db.prepare(`SELECT type, SUM(amount) as total, COUNT(*) as count FROM transactions WHERE month_key=? AND amount>0 GROUP BY type`).all(monthKey);
+  const breakdown = db.prepare(`SELECT type, category, COUNT(*) as count, SUM(amount) as total FROM transactions WHERE month_key=? AND amount>0 GROUP BY type, category`).all(monthKey);
+  const months = db.prepare('SELECT DISTINCT month_key FROM transactions WHERE month_key IS NOT NULL ORDER BY month_key DESC').all().map(m => m.month_key);
+  const expenses = totals.find(t => t.type === 'expense')?.total || 0;
+  const withdrawals = totals.find(t => t.type === 'withdrawal')?.total || 0;
+  res.json({ month: monthKey, totals: { expenses, withdrawals, balance: withdrawals - expenses }, breakdown, months });
+});
+
+// Charts
+app.get('/api/charts/daily', (req, res) => {
+  const db = getDb();
+  const monthKey = req.query.month || new Date().toISOString().slice(0, 7);
+  res.json(db.prepare(`SELECT DATE(source_timestamp) as date, type, SUM(amount) as total FROM transactions WHERE month_key=? AND amount>0 GROUP BY DATE(source_timestamp), type ORDER BY date`).all(monthKey));
+});
+
+app.get('/api/charts/comparison', (req, res) => {
+  const db = getDb();
+  const data = db.prepare(`SELECT month_key, type, SUM(amount) as total FROM transactions WHERE amount>0 AND month_key IS NOT NULL GROUP BY month_key, type ORDER BY month_key`).all();
+  const monthly = {};
+  data.forEach(r => { if (!monthly[r.month_key]) monthly[r.month_key] = { month: r.month_key, expenses: 0, withdrawals: 0 }; monthly[r.month_key][r.type === 'expense' ? 'expenses' : 'withdrawals'] = r.total; });
+  res.json(Object.values(monthly));
+});
+
+// Update transaction
+app.put('/api/transactions/:id', (req, res) => {
+  const db = getDb();
+  const { amount, type, category, description } = req.body;
+  const existing = db.prepare('SELECT * FROM transactions WHERE id=?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  db.prepare('UPDATE transactions SET amount=COALESCE(?,amount), type=COALESCE(?,type), category=COALESCE(?,category), description=COALESCE(?,description), needs_review=CASE WHEN ?=1 THEN 0 ELSE needs_review END WHERE id=?')
+    .run(amount, type, category, description, amount ? 1 : 0, req.params.id);
+  res.json(db.prepare('SELECT * FROM transactions WHERE id=?').get(req.params.id));
+});
+
+// Delete transaction
+app.delete('/api/transactions/:id', (req, res) => {
+  getDb().prepare('DELETE FROM transactions WHERE id=?').run(req.params.id);
+  res.json({ success: true });
+});
+
+// Settings
+app.get('/api/settings', (req, res) => {
+  res.json({ monthly_balance: parseFloat(getSetting('monthly_balance') || '0') });
+});
+app.put('/api/settings', (req, res) => {
+  Object.entries(req.body).forEach(([k, v]) => setSetting(k, String(v)));
+  res.json({ success: true });
+});
+
+// Serve frontend
+const fp = path.join(process.cwd(), 'frontend/dist');
+if (fs.existsSync(fp)) {
+  app.use(express.static(fp));
+  app.get('*', (req, res) => { if (!req.path.startsWith('/api')) res.sendFile(path.join(fp, 'index.html')); });
+} else {
+  app.get('/', (req, res) => res.json({ message: 'API running', frontend: 'not built' }));
+}
+
+io.on('connection', s => { console.log('Connected'); s.on('disconnect', () => console.log('Disconnected')); });
+
+initDb();
+httpServer.listen(PORT, () => console.log(`🚀 http://localhost:${PORT}`));
+process.on('uncaughtException', e => console.error(e.message));
+process.on('unhandledRejection', e => console.error(e?.message));

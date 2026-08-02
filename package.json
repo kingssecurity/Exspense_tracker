@@ -1,14 +1,7 @@
 {
   "name": "expense-tracker",
   "version": "1.0.0",
-  "main": "backend/src/index.js",
   "scripts": {
-    "build": "cd frontend && npm install && npm run build",
-    "start": "cd backend && npm install && node src/index.js",
-    "railway:build": "cd frontend && npm install && npm run build",
-    "railway:start": "cd backend && npm install && node src/index.js"
-  },
-  "engines": {
-    "node": ">=18.0.0"
+    "start": "cd backend && npm install && node src/index.js"
   }
 }

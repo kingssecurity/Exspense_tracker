@@ -83,12 +83,14 @@ app.post('/api/chat', (req, res) => {
 
     // Analyze as expense
     const analysis = analyzeMessage(text);
-    const monthKey = new Date().toISOString().slice(0, 7);
+    const transactionDate = analysis.transactionDate || new Date();
+    const monthKey = transactionDate.toISOString().slice(0, 7);
+    const sourceTimestamp = transactionDate.toISOString();
 
     db.prepare(`
-      INSERT INTO transactions (raw_message, amount, type, category, description, withdrawal_purpose, month_key, needs_review, confidence)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(text, analysis.amount, analysis.type, analysis.category, analysis.description, analysis.withdrawalPurpose, monthKey, analysis.needsReview, analysis.confidence);
+      INSERT INTO transactions (raw_message, amount, type, category, description, withdrawal_purpose, source_timestamp, month_key, needs_review, confidence)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(text, analysis.amount, analysis.type, analysis.category, analysis.description, analysis.withdrawalPurpose, sourceTimestamp, monthKey, analysis.needsReview, analysis.confidence);
 
     const emoji = analysis.type === 'expense' ? '💸' : analysis.type === 'withdrawal' ? '🏧' : '💵';
     const typeAr = analysis.type === 'expense' ? 'مصروف' : analysis.type === 'withdrawal' ? 'سحب' : 'راتب';

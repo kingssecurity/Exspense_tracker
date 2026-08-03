@@ -10,6 +10,21 @@ export function analyzeMessage(text) {
   const amountMatch = normalized.match(/[\d,]+\.?\d*/);
   const amount = amountMatch ? parseFloat(amountMatch[0].replace(/,/g, '')) : null;
 
+  // Extract date (يوم + number)
+  let transactionDate = null;
+  const dateMatch = text.match(/يوم\s*(\d+)/);
+  if (dateMatch) {
+    const day = parseInt(dateMatch[1]);
+    if (day >= 1 && day <= 31) {
+      const now = new Date();
+      transactionDate = new Date(now.getFullYear(), now.getMonth(), day);
+      // If the day is in the future, assume last month
+      if (transactionDate > now) {
+        transactionDate.setMonth(transactionDate.getMonth() - 1);
+      }
+    }
+  }
+
   // Detect type
   const withdrawalWords = ['سحبت', 'سحب', 'انسحبت', 'من الراتب', 'من حسابي', 'نزل'];
   const salaryWords = ['راتب', 'مرتب', 'المرتب', 'الراتب', 'نزل المرتب', 'نزل الراتب'];
@@ -38,14 +53,14 @@ export function analyzeMessage(text) {
   let withdrawalPurpose = null;
   if (isWithdrawal) {
     // Try to extract purpose after "عشان" or "لـ" or "علشان"
-    const purposeMatch = text.match(/(?:عشان|علشان|لـ|لل|من أجل|علشان)\s*(.+?)(?:\d|$)/);
+    const purposeMatch = text.match(/(?:عشان|علشان|لـ|لل|من أجل)\s*(.+?)(?:\d|$)/);
     if (purposeMatch) {
       withdrawalPurpose = purposeMatch[1].trim();
     }
   }
 
   // Clean description
-  let description = text.replace(/[\d,]+\.?\d*/g, '').replace(/جنيه|ج\.م|من|الراتب|المرتب/g, '').trim();
+  let description = text.replace(/[\d,]+\.?\d*/g, '').replace(/جنيه|ج\.م|من|الراتب|المرتب|يوم\s*\d+/g, '').trim();
   if (description.length > 60) description = description.slice(0, 60);
 
   // Determine final type
@@ -59,6 +74,7 @@ export function analyzeMessage(text) {
     category,
     description: description || text.slice(0, 60),
     withdrawalPurpose,
+    transactionDate,
     confidence: amount ? 0.85 : 0.4,
     needsReview: !amount ? 1 : 0
   };
@@ -170,5 +186,6 @@ export function getSmartAnswer(question, transactions, settings) {
          `💡 *أمثلة للتسجيل:*\n` +
          `• "راتبي 10000"\n` +
          `• "صرفت 150 جنيه أكل"\n` +
-         `• "سحبت 2000 من الراتب عشان مصاريف البيت"`;
+         `• "سحبت 2000 من الراتب عشان مصاريف البيت"\n` +
+         `• "صرفت 200 جنيه يوم 7 أكل" (لتسجيل مصروف بتاريخ معين)`;
 }

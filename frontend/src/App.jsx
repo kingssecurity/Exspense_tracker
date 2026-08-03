@@ -180,9 +180,9 @@ export default function App() {
               <h2 className="text-2xl font-bold">📊 ملخص الشهر</h2>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div className="card text-center"><p className="text-2xl font-bold text-green-400">{summary.totals.salary || 0}</p><p className="text-sm text-dark-400">💵 الراتب</p></div>
-                <div className="card text-center"><p className="text-2xl font-bold text-yellow-400">{summary.totals.withdrawals}</p><p className="text-sm text-dark-400">🏧 مسحوب</p></div>
-                <div className="card text-center"><p className="text-2xl font-bold text-red-400">{summary.totals.expenses}</p><p className="text-sm text-dark-400">💸 مصروف</p></div>
-                <div className="card text-center"><p className={`text-2xl font-bold ${summary.totals.balance >= 0 ? 'text-green-400' : 'text-red-400'}`}>{summary.totals.balance}</p><p className="text-sm text-dark-400">💰 متبقي</p></div>
+                <div className="card text-center"><p className="text-2xl font-bold text-yellow-400">{summary.totals.withdrawals}</p><p className="text-sm text-dark-400">🏧 سلف</p></div>
+                <div className="card text-center"><p className={`text-2xl font-bold ${summary.totals.balance >= 0 ? 'text-green-400' : 'text-red-400'}`}>{summary.totals.balance}</p><p className="text-sm text-dark-400">💰 متبقي من الراتب</p></div>
+                <div className="card text-center"><p className="text-2xl font-bold text-red-400">{summary.totals.expenses}</p><p className="text-sm text-dark-400">💸 مصروفات</p></div>
               </div>
               {summary.breakdown.length > 0 && (
                 <div className="card">

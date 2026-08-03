@@ -90,7 +90,7 @@ export function getSmartAnswer(question, transactions, settings) {
   const totalWithdrawals = monthTx.filter(t => t.type === 'withdrawal').reduce((s, t) => s + (t.amount || 0), 0);
   const totalSalary = monthTx.filter(t => t.type === 'salary').reduce((s, t) => s + (t.amount || 0), 0);
   const monthlyBalance = parseFloat(settings?.monthly_balance || '0');
-  const balance = (totalSalary + monthlyBalance) - totalExpenses;
+  const balance = (totalSalary + monthlyBalance) - totalWithdrawals;  // المتبقي = الراتب - السحوبات
 
   // Category stats
   const byCategory = {};
@@ -106,11 +106,11 @@ export function getSmartAnswer(question, transactions, settings) {
   // Answer different questions
   if (q.includes('رصيد') || q.includes('متبقي') || q.includes('باقي') || q.includes('فلوس') || q.includes('كام فلوس')) {
     return `💰 *رصيدك الحالي*\n\n` +
-           `💵 الراتب/الدخل: ${totalSalary + monthlyBalance} ج.م\n` +
-           `💸 المصروفات: ${totalExpenses} ج.م\n` +
-           `🏧 المسحوبات: ${totalWithdrawals} ج.م\n` +
+           `💵 الراتب: ${totalSalary + monthlyBalance} ج.م\n` +
+           `🏧 المسحوبات (سلف): ${totalWithdrawals} ج.م\n` +
            `━━━━━━━━━━━━\n` +
-           `✨ المتبقي: ${balance} ج.م`;
+           `✨ المتبقي من الراتب: ${balance} ج.م\n\n` +
+           `💸 المصروفات (منفصلة): ${totalExpenses} ج.م`;
   }
   
   if (q.includes('مصروف') && (q.includes('كام') || q.includes('قد ايه') || q.includes('إجمالي'))) {

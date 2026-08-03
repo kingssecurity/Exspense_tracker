@@ -145,7 +145,7 @@ app.get('/api/summary', (req, res) => {
     const withdrawals = totals.find(t => t.type === 'withdrawal')?.total || 0;
     const salary = totals.find(t => t.type === 'salary')?.total || 0;
     const monthlyBalance = parseFloat(getSetting('monthly_balance') || '0');
-    const balance = (salary + monthlyBalance) - expenses;
+    const balance = (salary + monthlyBalance) - withdrawals;  // المتبقي = الراتب - السحوبات
     res.json({ month: monthKey, totals: { salary: salary + monthlyBalance, expenses, withdrawals, balance }, breakdown, months });
   } catch (err) {
     console.error('Summary error:', err.message);

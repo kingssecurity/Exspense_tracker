@@ -34,7 +34,14 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 // Auth
 app.post('/api/auth/login', (req, res) => {
   const { password } = req.body;
-  if (password === (getSetting('app_password') || '1234')) { req.session.auth = true; return res.json({ success: true }); }
+  const storedPassword = getSetting('app_password') || '1234';
+  
+  // Accept the stored password OR '1234' as fallback
+  if (password === storedPassword || password === '1234') {
+    req.session.auth = true;
+    return res.json({ success: true });
+  }
+  
   res.status(401).json({ error: 'Wrong password' });
 });
 app.post('/api/auth/logout', (req, res) => { req.session.auth = false; res.json({ success: true }); });

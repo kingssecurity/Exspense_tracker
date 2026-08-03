@@ -28,23 +28,22 @@ app.use((req, res, next) => {
   next();
 });
 
-// Health
+// ==================== API ROUTES ====================
+
+// Health check
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 
 // Auth
 app.post('/api/auth/login', (req, res) => {
   const { username, password } = req.body;
-  console.log('Login attempt:', username);
   const user = getUser(username, password);
   if (user) {
     req.session.auth = true;
     req.session.userId = user.id;
     req.session.username = user.username;
     req.session.displayName = user.display_name;
-    console.log('Login success:', user.username);
     return res.json({ success: true, user: { id: user.id, username: user.username, displayName: user.display_name } });
   }
-  console.log('Login failed');
   res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غلط' });
 });
 
@@ -59,7 +58,7 @@ app.get('/api/auth/check', (req, res) => res.json({
   user: req.session?.userId ? { id: req.session.userId, username: req.session.username, displayName: req.session.displayName } : null
 }));
 
-// Auth middleware
+// Auth middleware for protected routes
 app.use('/api', (req, res, next) => {
   if (req.path === '/health' || req.path === '/auth/login' || req.path === '/auth/check') return next();
   if (!req.session?.auth) return res.status(401).json({ error: 'Unauthorized' });
@@ -196,14 +195,42 @@ app.put('/api/settings', (req, res) => {
   res.json({ success: true });
 });
 
-// Frontend
-const fp = path.join(process.cwd(), 'frontend/dist');
-if (fs.existsSync(fp)) {
-  app.use(express.static(fp));
-  app.get('*', (req, res) => { if (!req.path.startsWith('/api')) res.sendFile(path.join(fp, 'index.html')); });
-} else {
-  app.get('/', (req, res) => res.json({ message: 'API running' }));
+// ==================== SERVE FRONTEND ====================
+
+// Find frontend build
+const possiblePaths = [
+  path.join(process.cwd(), 'frontend/dist'),
+  path.join(__dirname, '../../frontend/dist'),
+  path.join(__dirname, '../../../frontend/dist'),
+];
+
+let frontendPath = null;
+for (const p of possiblePaths) {
+  if (fs.existsSync(p) && fs.existsSync(path.join(p, 'index.html'))) {
+    frontendPath = p;
+    break;
+  }
 }
+
+if (frontendPath) {
+  console.log('📂 Serving frontend from:', frontendPath);
+  
+  // Serve static files
+  app.use(express.static(frontendPath));
+  
+  // Catch-all: serve index.html for all non-API routes (MUST be after API routes)
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(frontendPath, 'index.html'));
+  });
+} else {
+  console.log('⚠️ Frontend not found at:', possiblePaths);
+  // Only show this if no frontend is found
+  app.get('/', (req, res) => {
+    res.status(500).json({ error: 'Frontend not built' });
+  });
+}
+
+// ==================== START SERVER ====================
 
 io.on('connection', s => s.on('disconnect', () => {}));
 initDb();

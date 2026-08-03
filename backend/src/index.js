@@ -5,7 +5,7 @@ import { Server } from 'socket.io';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { initDb, getDb, getSetting, setSetting, getUser, getUserById, updateUser, getAllUsers } from './database.js';
+import { initFirebase, getUser, getUserById, updateUser, getAllUsers, addTransaction, getTransactions, updateTransaction, deleteTransaction, getSetting, setSetting, getUserSettings } from './firebase.js';
 import { analyzeMessage, getSmartAnswer } from './analyzer.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -32,15 +32,15 @@ app.use((req, res, next) => {
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 
 // Auth
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body;
-  const user = getUser(username, password);
+  const user = await getUser(username, password);
   if (user) {
     req.session.auth = true;
     req.session.userId = user.id;
     req.session.username = user.username;
-    req.session.displayName = user.display_name;
-    return res.json({ success: true, user: { id: user.id, username: user.username, displayName: user.display_name } });
+    req.session.displayName = user.displayName;
+    return res.json({ success: true, user: { id: user.id, username: user.username, displayName: user.displayName } });
   }
   res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غلط' });
 });
@@ -64,39 +64,48 @@ app.use('/api', (req, res, next) => {
 });
 
 // Users management
-app.get('/api/users', (req, res) => {
-  res.json(getAllUsers());
+app.get('/api/users', async (req, res) => {
+  res.json(await getAllUsers());
 });
 
-app.put('/api/users/:id', (req, res) => {
-  const { password, displayName } = req.body;
-  updateUser(req.params.id, { password, display_name: displayName });
+app.put('/api/users/:id/password', async (req, res) => {
+  const { oldPassword, newPassword } = req.body;
+  const userId = req.params.id;
+  
+  // Verify old password
+  const user = await getUserById(userId);
+  if (!user || user.password !== oldPassword) {
+    return res.status(400).json({ error: 'كلمة المرور القديمة غلط' });
+  }
+  
+  // Update password
+  await updateUser(userId, { password: newPassword });
+  res.json({ success: true, message: 'تم تغيير كلمة المرور' });
+});
+
+app.put('/api/users/:id', async (req, res) => {
+  const { displayName } = req.body;
+  await updateUser(req.params.id, { displayName });
   res.json({ success: true });
 });
 
 // Chat endpoint
-app.post('/api/chat', (req, res) => {
+app.post('/api/chat', async (req, res) => {
   try {
     const { message } = req.body;
     if (!message) return res.status(400).json({ error: 'Message required' });
 
-    const db = getDb();
     const text = message.trim();
     const userId = req.session.userId;
 
     // Check if it's a question
-    const questionWords = ['كام', 'قد ايه', 'رصيد', 'متبقي', 'باقي', 'أكتر', 'اكثر', 'تفصيل', 'تفاصيل', 'عدد', 'اليوم', 'نهارده', 'إيه', 'ايه', 'ازاي', 'ليه', 'امتى'];
+    const questionWords = ['كام', 'قد ايه', 'رصيد', 'متبقي', 'باقي', 'أكتر', 'اكثر', 'تفصيل', 'تفاصيل', 'عدد', 'اليوم', 'نهارده', 'إيه', 'ايه', 'ازاي', 'ليه', 'امتى', 'تحليل', 'نصيحة', 'نصائح', 'ميزانية', 'هدف'];
     const isQuestion = questionWords.some(w => text.includes(w)) || text.includes('?') || text.includes('؟');
 
     if (isQuestion) {
-      const transactions = db.prepare('SELECT * FROM transactions WHERE user_id = ? ORDER BY source_timestamp DESC').all(userId);
-      const settings = { 
-        monthly_balance: getSetting(`monthly_balance_${userId}`) || getSetting('monthly_balance') || '0',
-        budgets: JSON.parse(getSetting(`budgets_${userId}`) || '{}'),
-        savings_goal: getSetting(`savings_goal_${userId}`) || '0',
-        savings_saved: getSetting(`savings_saved_${userId}`) || '0'
-      };
-      const user = getUserById(userId);
+      const transactions = await getTransactions(userId, { limit: 500 });
+      const settings = await getUserSettings(userId);
+      const user = await getUserById(userId);
       const answer = getSmartAnswer(text, transactions, settings, user);
       return res.json({ type: 'answer', message: answer });
     }
@@ -107,16 +116,25 @@ app.post('/api/chat', (req, res) => {
     const monthKey = transactionDate.toISOString().slice(0, 7);
     const sourceTimestamp = transactionDate.toISOString();
 
-    db.prepare(`
-      INSERT INTO transactions (raw_message, amount, type, category, description, withdrawal_purpose, user_id, source_timestamp, month_key, needs_review, confidence)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(text, analysis.amount, analysis.type, analysis.category, analysis.description, analysis.withdrawalPurpose, userId, sourceTimestamp, monthKey, analysis.needsReview, analysis.confidence);
+    await addTransaction({
+      rawMessage: text,
+      amount: analysis.amount,
+      type: analysis.type,
+      category: analysis.category,
+      description: analysis.description,
+      withdrawalPurpose: analysis.withdrawalPurpose,
+      userId: userId,
+      sourceTimestamp: sourceTimestamp,
+      monthKey: monthKey,
+      needsReview: analysis.needsReview ? 1 : 0,
+      confidence: analysis.confidence
+    });
 
     const emoji = analysis.type === 'expense' ? '💸' : analysis.type === 'withdrawal' ? '🏧' : '💵';
     const typeAr = analysis.type === 'expense' ? 'مصروف' : analysis.type === 'withdrawal' ? 'سحب' : 'راتب';
-    const categoryNames = { work:'شغل', home:'بيت', transport:'مواصلات', health:'صحة', education:'تعليم', bills:'فواتير', shopping:'تسوق', other:'أخرى' };
+    const categoryNames = { work:'شغل', home:'بيت', transport:'مواصلات', health:'صحة', education:'تعليم', bills:'فواتير', shopping:'تسوق', entertainment:'ترفيه', other:'أخرى' };
     const catAr = categoryNames[analysis.category] || 'أخرى';
-    const reviewNote = analysis.needsReview ? '\n⚠️ محتاج مراجعة (مفيش مبلغ واضح)' : '';
+    const reviewNote = analysis.needsReview ? '\n⚠️ محتاج مراجعة' : '';
     const purposeNote = analysis.withdrawalPurpose ? `\n🎯 عشان: ${analysis.withdrawalPurpose}` : '';
 
     const responseMessage = `${emoji} ${typeAr}: ${analysis.amount || '?'} ج.م\n📂 ${catAr}\n📝 ${analysis.description}${purposeNote}${reviewNote}`;
@@ -124,95 +142,98 @@ app.post('/api/chat', (req, res) => {
     io.emit('new_transaction', { ...analysis, raw_message: text, month_key: monthKey, user_id: userId });
     res.json({ type: 'transaction', message: responseMessage, data: analysis });
   } catch (err) {
-    console.error('Chat error:', err.message, err.stack);
-    res.status(500).json({ error: 'Error processing message', details: err.message });
+    console.error('Chat error:', err.message);
+    res.status(500).json({ error: 'Error processing message' });
   }
 });
 
-// Get transactions (filtered by user)
-app.get('/api/transactions', (req, res) => {
+// Get transactions
+app.get('/api/transactions', async (req, res) => {
   try {
-    const db = getDb();
     const userId = req.session.userId;
-    const { type, category, month, search, needs_review, page = 1, limit = 50 } = req.query;
-    let query = 'SELECT * FROM transactions WHERE user_id = ?';
-    const params = [userId];
-    if (type) { query += ' AND type = ?'; params.push(type); }
-    if (category) { query += ' AND category = ?'; params.push(category); }
-    if (month) { query += ' AND month_key = ?'; params.push(month); }
-    if (search) { query += ' AND (raw_message LIKE ? OR description LIKE ?)'; params.push(`%${search}%`, `%${search}%`); }
-    if (needs_review === 'true') query += ' AND needs_review = 1';
+    const { type, category, month, limit = 100 } = req.query;
     
-    const total = db.prepare(query.replace('SELECT *', 'SELECT COUNT(*) as t')).get(...params).t;
-    query += ' ORDER BY source_timestamp DESC LIMIT ? OFFSET ?';
-    params.push(parseInt(limit), (parseInt(page)-1)*parseInt(limit));
+    const filters = { limit: parseInt(limit) };
+    if (type) filters.type = type;
+    if (category) filters.category = category;
+    if (month) filters.monthKey = month;
     
-    res.json({ transactions: db.prepare(query).all(...params), pagination: { page: parseInt(page), total, pages: Math.ceil(total/parseInt(limit)) } });
+    const transactions = await getTransactions(userId, filters);
+    res.json({ transactions, pagination: { total: transactions.length } });
   } catch (err) {
     console.error('Transactions error:', err.message);
-    res.json({ transactions: [], pagination: { page: 1, total: 0, pages: 0 } });
+    res.json({ transactions: [], pagination: { total: 0 } });
   }
 });
 
-// Summary (filtered by user)
-app.get('/api/summary', (req, res) => {
+// Summary
+app.get('/api/summary', async (req, res) => {
   try {
-    const db = getDb();
     const userId = req.session.userId;
     const monthKey = req.query.month || new Date().toISOString().slice(0, 7);
-    const totals = db.prepare(`SELECT type, SUM(amount) as total, COUNT(*) as count FROM transactions WHERE user_id = ? AND month_key=? AND amount>0 GROUP BY type`).all(userId, monthKey);
-    const breakdown = db.prepare(`SELECT type, category, COUNT(*) as count, SUM(amount) as total FROM transactions WHERE user_id = ? AND month_key=? AND amount>0 GROUP BY type, category`).all(userId, monthKey);
-    const months = db.prepare('SELECT DISTINCT month_key FROM transactions WHERE user_id = ? AND month_key IS NOT NULL ORDER BY month_key DESC').all(userId).map(m => m.month_key);
-    const expenses = totals.find(t => t.type === 'expense')?.total || 0;
-    const withdrawals = totals.find(t => t.type === 'withdrawal')?.total || 0;
-    const salary = totals.find(t => t.type === 'salary')?.total || 0;
-    const monthlyBalance = parseFloat(getSetting(`monthly_balance_${userId}`) || getSetting('monthly_balance') || '0');
-    const balance = (salary + monthlyBalance) - withdrawals;
-    res.json({ month: monthKey, totals: { salary: salary + monthlyBalance, expenses, withdrawals, balance }, breakdown, months });
+    
+    const transactions = await getTransactions(userId, { monthKey, limit: 1000 });
+    
+    const expenses = transactions.filter(t => t.type === 'expense').reduce((s, t) => s + (t.amount || 0), 0);
+    const withdrawals = transactions.filter(t => t.type === 'withdrawal').reduce((s, t) => s + (t.amount || 0), 0);
+    const salary = transactions.filter(t => t.type === 'salary').reduce((s, t) => s + (t.amount || 0), 0);
+    
+    const settings = await getUserSettings(userId);
+    const balance = (salary + settings.monthly_balance) - withdrawals;
+
+    // Breakdown by category
+    const breakdown = {};
+    transactions.filter(t => t.type === 'expense').forEach(t => {
+      if (!breakdown[t.category]) breakdown[t.category] = { category: t.category, total: 0, count: 0 };
+      breakdown[t.category].total += t.amount || 0;
+      breakdown[t.category].count++;
+    });
+
+    res.json({ 
+      month: monthKey, 
+      totals: { salary: salary + settings.monthly_balance, expenses, withdrawals, balance }, 
+      breakdown: Object.values(breakdown),
+      months: [monthKey]
+    });
   } catch (err) {
     console.error('Summary error:', err.message);
-    res.json({ month: new Date().toISOString().slice(0,7), totals: { expenses: 0, withdrawals: 0, balance: 0 }, breakdown: [], months: [] });
+    res.json({ month: new Date().toISOString().slice(0,7), totals: { salary: 0, expenses: 0, withdrawals: 0, balance: 0 }, breakdown: [], months: [] });
   }
 });
 
-// Charts (filtered by user)
-app.get('/api/charts/daily', (req, res) => {
+// Charts
+app.get('/api/charts/daily', async (req, res) => {
   try {
-    const db = getDb();
     const userId = req.session.userId;
     const monthKey = req.query.month || new Date().toISOString().slice(0, 7);
-    res.json(db.prepare(`SELECT DATE(source_timestamp) as date, type, SUM(amount) as total FROM transactions WHERE user_id = ? AND month_key=? AND amount>0 GROUP BY DATE(source_timestamp), type ORDER BY date`).all(userId, monthKey));
-  } catch (err) {
-    res.json([]);
-  }
-});
-
-app.get('/api/charts/comparison', (req, res) => {
-  try {
-    const db = getDb();
-    const userId = req.session.userId;
-    const data = db.prepare(`SELECT month_key, type, SUM(amount) as total FROM transactions WHERE user_id = ? AND amount>0 AND month_key IS NOT NULL GROUP BY month_key, type ORDER BY month_key`).all(userId);
-    const monthly = {};
-    data.forEach(r => { if (!monthly[r.month_key]) monthly[r.month_key] = { month: r.month_key, expenses: 0, withdrawals: 0 }; monthly[r.month_key][r.type === 'expense' ? 'expenses' : 'withdrawals'] = r.total; });
-    res.json(Object.values(monthly));
+    const transactions = await getTransactions(userId, { monthKey, limit: 1000 });
+    
+    const daily = {};
+    transactions.forEach(t => {
+      const date = t.sourceTimestamp?.slice(0, 10);
+      if (!date) return;
+      if (!daily[date]) daily[date] = { date, expenses: 0, withdrawals: 0 };
+      if (t.type === 'expense') daily[date].expenses += t.amount || 0;
+      if (t.type === 'withdrawal') daily[date].withdrawals += t.amount || 0;
+    });
+    
+    res.json(Object.values(daily));
   } catch (err) {
     res.json([]);
   }
 });
 
 // Update transaction date
-app.put('/api/transactions/:id/date', (req, res) => {
+app.put('/api/transactions/:id/date', async (req, res) => {
   try {
-    const db = getDb();
     const { date } = req.body;
-    const existing = db.prepare('SELECT * FROM transactions WHERE id=? AND user_id=?').get(req.params.id, req.session.userId);
-    if (!existing) return res.status(404).json({ error: 'Not found' });
-    
     const newDate = new Date(date);
     const monthKey = newDate.toISOString().slice(0, 7);
     
-    db.prepare('UPDATE transactions SET source_timestamp = ?, month_key = ? WHERE id = ?')
-      .run(newDate.toISOString(), monthKey, req.params.id);
+    await updateTransaction(req.params.id, {
+      sourceTimestamp: newDate.toISOString(),
+      monthKey: monthKey
+    });
     
     res.json({ success: true });
   } catch (err) {
@@ -220,25 +241,10 @@ app.put('/api/transactions/:id/date', (req, res) => {
   }
 });
 
-// Update transaction
-app.put('/api/transactions/:id', (req, res) => {
-  try {
-    const db = getDb();
-    const { amount, type, category, description } = req.body;
-    const existing = db.prepare('SELECT * FROM transactions WHERE id=? AND user_id=?').get(req.params.id, req.session.userId);
-    if (!existing) return res.status(404).json({ error: 'Not found' });
-    db.prepare('UPDATE transactions SET amount=COALESCE(?,amount), type=COALESCE(?,type), category=COALESCE(?,category), description=COALESCE(?,description), needs_review=CASE WHEN ?=1 THEN 0 ELSE needs_review END WHERE id=?')
-      .run(amount, type, category, description, amount ? 1 : 0, req.params.id);
-    res.json(db.prepare('SELECT * FROM transactions WHERE id=?').get(req.params.id));
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // Delete transaction
-app.delete('/api/transactions/:id', (req, res) => {
+app.delete('/api/transactions/:id', async (req, res) => {
   try {
-    getDb().prepare('DELETE FROM transactions WHERE id=? AND user_id=?').run(req.params.id, req.session.userId);
+    await deleteTransaction(req.params.id);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -246,21 +252,16 @@ app.delete('/api/transactions/:id', (req, res) => {
 });
 
 // Settings
-app.get('/api/settings', (req, res) => {
+app.get('/api/settings', async (req, res) => {
   const userId = req.session.userId;
-  res.json({ 
-    monthly_balance: parseFloat(getSetting(`monthly_balance_${userId}`) || getSetting('monthly_balance') || '0'),
-    budgets: JSON.parse(getSetting(`budgets_${userId}`) || '{}'),
-    savings_goal: getSetting(`savings_goal_${userId}`) || '0',
-    savings_saved: getSetting(`savings_saved_${userId}`) || '0'
-  });
+  res.json(await getUserSettings(userId));
 });
 
-app.put('/api/settings', (req, res) => {
+app.put('/api/settings', async (req, res) => {
   const userId = req.session.userId;
-  Object.entries(req.body).forEach(([k, v]) => {
-    setSetting(`${k}_${userId}`, String(v));
-  });
+  for (const [key, value] of Object.entries(req.body)) {
+    await setSetting(userId, key, String(value));
+  }
   res.json({ success: true });
 });
 
@@ -285,24 +286,14 @@ if (fp) {
   app.use(express.static(fp));
   app.get('*', (req, res) => { if (!req.path.startsWith('/api')) res.sendFile(path.join(fp, 'index.html')); });
 } else {
-  console.log('⚠️ Frontend not found. Searched:', possiblePaths);
-  app.get('/', (req, res) => res.json({ 
-    message: 'API running', 
-    frontend: 'not built',
-    cwd: process.cwd(),
-    hint: 'Run: cd frontend && npm install && npm run build'
-  }));
+  console.log('⚠️ Frontend not found');
+  app.get('/', (req, res) => res.json({ message: 'API running', frontend: 'not built' }));
 }
 
 io.on('connection', s => { console.log('Connected'); s.on('disconnect', () => console.log('Disconnected')); });
 
-// Initialize database
-try {
-  initDb();
-  console.log('✅ Database initialized');
-} catch (err) {
-  console.error('Database error:', err.message);
-}
+// Initialize Firebase
+await initFirebase();
 
 httpServer.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
 

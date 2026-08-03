@@ -28,6 +28,7 @@ export default function App() {
   const [users, setUsers] = useState([]);
   const [editingUser, setEditingUser] = useState(null);
   const [newDisplayName, setNewDisplayName] = useState('');
+  const [oldPassword, setOldPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [isListening, setIsListening] = useState(false);
   const [editingTx, setEditingTx] = useState(null);
@@ -127,16 +128,29 @@ export default function App() {
 
   async function handleUpdateUser(userId) {
     try {
-      const data = {};
-      if (newPassword) data.password = newPassword;
-      if (newDisplayName) data.displayName = newDisplayName;
-      await api.put(`/users/${userId}`, data);
+      // Update display name
+      if (newDisplayName) {
+        await api.put(`/users/${userId}`, { displayName: newDisplayName });
+      }
+      
+      // Update password (requires old password)
+      if (newPassword) {
+        if (!oldPassword) {
+          alert('اكتب كلمة المرور القديمة');
+          return;
+        }
+        await api.put(`/users/${userId}/password`, { oldPassword, newPassword });
+      }
+      
       alert('تم التحديث!');
       setEditingUser(null);
       setNewPassword('');
+      setOldPassword('');
       setNewDisplayName('');
       loadData();
-    } catch { alert('حصل خطأ'); }
+    } catch (err) { 
+      alert(err.response?.data?.error || 'حصل خطأ'); 
+    }
   }
 
   function updateBudget(category, value) {
@@ -452,11 +466,15 @@ export default function App() {
                 {editingUser && (
                   <div className="p-4 bg-dark-800 rounded-xl space-y-3">
                     <h4 className="font-bold">تعديل المستخدم</h4>
-                    <input type="text" value={newDisplayName} onChange={e => setNewDisplayName(e.target.value)} className="input" placeholder="الاسم" />
-                    <input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} className="input" placeholder="كلمة مرور جديدة" />
+                    <input type="text" value={newDisplayName} onChange={e => setNewDisplayName(e.target.value)} className="input" placeholder="الاسم الجديد" />
+                    <div className="border-t border-dark-700 pt-3 mt-3">
+                      <p className="text-sm text-dark-400 mb-2">تغيير كلمة المرور:</p>
+                      <input type="password" value={oldPassword} onChange={e => setOldPassword(e.target.value)} className="input mb-2" placeholder="كلمة المرور القديمة" />
+                      <input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} className="input" placeholder="كلمة المرور الجديدة" />
+                    </div>
                     <div className="flex gap-2">
                       <button onClick={() => handleUpdateUser(editingUser)} className="btn-primary flex-1">حفظ</button>
-                      <button onClick={() => { setEditingUser(null); setNewPassword(''); setNewDisplayName(''); }} className="btn-secondary flex-1">إلغاء</button>
+                      <button onClick={() => { setEditingUser(null); setNewPassword(''); setOldPassword(''); setNewDisplayName(''); }} className="btn-secondary flex-1">إلغاء</button>
                     </div>
                   </div>
                 )}

@@ -193,19 +193,32 @@ app.put('/api/settings', (req, res) => {
 });
 
 // Serve frontend
-const fp = path.join(process.cwd(), 'frontend/dist');
-console.log('📂 Looking for frontend at:', fp);
-console.log('📂 Exists:', fs.existsSync(fp));
-if (fs.existsSync(fp)) {
+const possiblePaths = [
+  path.join(process.cwd(), 'frontend/dist'),
+  path.join(process.cwd(), '../frontend/dist'),
+  path.join(__dirname, '../../frontend/dist'),
+  path.join(__dirname, '../../../frontend/dist'),
+];
+
+let fp = null;
+for (const p of possiblePaths) {
+  if (fs.existsSync(p) && fs.existsSync(path.join(p, 'index.html'))) {
+    fp = p;
+    break;
+  }
+}
+
+if (fp) {
+  console.log('📂 Serving frontend from:', fp);
   app.use(express.static(fp));
   app.get('*', (req, res) => { if (!req.path.startsWith('/api')) res.sendFile(path.join(fp, 'index.html')); });
 } else {
+  console.log('⚠️ Frontend not found. Searched:', possiblePaths);
   app.get('/', (req, res) => res.json({ 
     message: 'API running', 
     frontend: 'not built',
-    path: fp,
-    exists: fs.existsSync(fp),
-    cwd: process.cwd()
+    cwd: process.cwd(),
+    hint: 'Run: cd frontend && npm install && npm run build'
   }));
 }
 

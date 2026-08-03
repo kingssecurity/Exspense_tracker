@@ -4,8 +4,12 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import path from 'path';
 import fs from 'fs';
+import { fileURLToPath } from 'url';
 import { initDb, getDb, getSetting, setSetting } from './database.js';
 import { analyzeMessage, getSmartAnswer } from './analyzer.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const PORT = process.env.PORT || 3001;
 const app = express();

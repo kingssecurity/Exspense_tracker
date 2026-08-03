@@ -4,92 +4,143 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import path from 'path';
 import fs from 'fs';
+import session from 'express-session';
+import SqliteStore from 'better-sqlite3-session-store';
+import rateLimit from 'express-rate-limit';
 import { fileURLToPath } from 'url';
-import { initDb, getUser, getUserById, updateUser, getAllUsers, addTransaction, getTransactions, updateTransactionDate, deleteTransaction, getSetting, setSetting, getUserSettings } from './database.js';
+import { initDb, getDb, getUser, getUserById, getUserByIdFull, updateUser, getAllUsers, addTransaction, getTransactions, getTransactionById, updateTransactionDate, deleteTransaction, getSetting, setSetting, getUserSettings } from './database.js';
 import { analyzeMessage, getSmartAnswer } from './analyzer.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = process.env.PORT || 3001;
+const isProduction = process.env.NODE_ENV === 'production';
 const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, { cors: { origin: '*' } });
 
-app.use(cors({ origin: '*' }));
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 
-// Simple session
-const sessions = {};
-app.use((req, res, next) => {
-  let sid = req.headers.cookie?.split('sid=')[1]?.split(';')[0];
-  if (!sid || !sessions[sid]) { sid = Math.random().toString(36).substring(2); sessions[sid] = {}; res.cookie('sid', sid, { httpOnly: true, maxAge: 7*24*60*60*1000 }); }
-  req.session = sessions[sid];
-  next();
+// ==================== SESSION (persisted in SQLite) ====================
+const db = getDb();
+
+app.use(session({
+  store: new SqliteStore({
+    client: db,
+    expired: { clear: true, intervalMs: 900000 },
+  }),
+  secret: process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex'),
+  resave: false,
+  saveUninitialized: false,
+  name: 'sid',
+  cookie: {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: isProduction,
+    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+  },
+}));
+
+// ==================== RATE LIMITING ====================
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10,
+  message: { error: 'محاولات كتير، جرب تاني بعد 15 دقيقة' },
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 
 // ==================== API ROUTES ====================
 
-// Health check
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 
 // Auth
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', loginLimiter, (req, res) => {
   const { username, password } = req.body;
+  if (!username || !password) return res.status(400).json({ error: 'مطلوب' });
   const user = getUser(username, password);
-  if (user) {
-    req.session.auth = true;
+  if (!user) return res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غلط' });
+  
+  req.session.regenerate((err) => {
+    if (err) return res.status(500).json({ error: 'Session error' });
     req.session.userId = user.id;
     req.session.username = user.username;
     req.session.displayName = user.display_name;
-    return res.json({ success: true, user: { id: user.id, username: user.username, displayName: user.display_name } });
-  }
-  res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غلط' });
+    req.session.save((err) => {
+      if (err) return res.status(500).json({ error: 'Session error' });
+      res.json({ success: true, user: { id: user.id, username: user.username, displayName: user.display_name } });
+    });
+  });
 });
 
-app.post('/api/auth/logout', (req, res) => { 
-  req.session.auth = false; 
-  req.session.userId = null;
-  res.json({ success: true }); 
+app.post('/api/auth/logout', (req, res) => {
+  req.session.destroy((err) => {
+    res.clearCookie('sid');
+    res.json({ success: true });
+  });
 });
 
-app.get('/api/auth/check', (req, res) => res.json({ 
-  isAuthenticated: req.session?.auth === true,
-  user: req.session?.userId ? { id: req.session.userId, username: req.session.username, displayName: req.session.displayName } : null
-}));
+app.get('/api/auth/check', (req, res) => {
+  res.json({
+    isAuthenticated: !!req.session?.userId,
+    user: req.session?.userId ? { id: req.session.userId, username: req.session.username, displayName: req.session.displayName } : null
+  });
+});
 
-// Auth middleware for protected routes
+// Auth middleware
+function requireAuth(req, res, next) {
+  if (!req.session?.userId) return res.status(401).json({ error: 'Unauthorized' });
+  next();
+}
+
 app.use('/api', (req, res, next) => {
   if (req.path === '/health' || req.path === '/auth/login' || req.path === '/auth/check') return next();
-  if (!req.session?.auth) return res.status(401).json({ error: 'Unauthorized' });
-  next();
+  return requireAuth(req, res, next);
 });
 
-// Users
-app.get('/api/users', (req, res) => res.json(getAllUsers()));
+// ==================== USERS ====================
 
-app.put('/api/users/:id/password', (req, res) => {
+// Only return current user's own profile
+app.get('/api/users', (req, res) => {
+  const user = getUserById(req.session.userId);
+  res.json(user ? [user] : []);
+});
+
+// Update own profile only
+app.put('/api/users/profile', (req, res) => {
+  const { displayName } = req.body;
+  updateUser(req.session.userId, { displayName });
+  req.session.displayName = displayName;
+  res.json({ success: true });
+});
+
+// Change own password only
+app.put('/api/users/password', (req, res) => {
   const { oldPassword, newPassword } = req.body;
-  const userId = req.params.id;
-  const user = getUserById(userId);
-  if (!user || user.password !== oldPassword) {
+  if (!oldPassword || !newPassword) return res.status(400).json({ error: 'مطلوب' });
+  if (newPassword.length < 4) return res.status(400).json({ error: 'كلمة المرور الجديدة قصيرة' });
+  
+  const user = getUserByIdFull(req.session.userId);
+  if (!user) return res.status(404).json({ error: 'مستخدم غير موجود' });
+  
+  // Verify old password using the getUser function which does bcrypt check
+  const verified = getUser(user.username, oldPassword);
+  if (!verified) {
     return res.status(400).json({ error: 'كلمة المرور القديمة غلط' });
   }
-  updateUser(userId, { password: newPassword });
-  res.json({ success: true });
+  
+  updateUser(req.session.userId, { password: newPassword });
+  res.json({ success: true, message: 'تم تغيير كلمة المرور' });
 });
 
-app.put('/api/users/:id', (req, res) => {
-  const { displayName } = req.body;
-  updateUser(req.params.id, { displayName });
-  res.json({ success: true });
-});
+// ==================== CHAT ====================
 
-// Chat
 app.post('/api/chat', (req, res) => {
   try {
     const { message } = req.body;
-    if (!message) return res.status(400).json({ error: 'Message required' });
+    if (!message) return res.status(400).json({ error: 'مطلوب' });
     const text = message.trim();
     const userId = req.session.userId;
 
@@ -117,11 +168,11 @@ app.post('/api/chat', (req, res) => {
 
     const emoji = analysis.type === 'expense' ? '💸' : analysis.type === 'withdrawal' ? '🏧' : '💵';
     const typeAr = analysis.type === 'expense' ? 'مصروف' : analysis.type === 'withdrawal' ? 'سحب' : 'راتب';
-    const cats = { work:'شغل', home:'بيت', transport:'مواصلات', other:'أخرى' };
+    const cats = { work:'شغل', home:'بيت', transport:'مواصلات', health:'صحة', education:'تعليم', bills:'فواتير', shopping:'تسوق', entertainment:'ترفيه', other:'أخرى' };
     const catAr = cats[analysis.category] || 'أخرى';
     const purpose = analysis.withdrawalPurpose ? `\n🎯 عشان: ${analysis.withdrawalPurpose}` : '';
 
-    io.emit('new_transaction', { ...analysis, raw_message: text, month_key: monthKey });
+    io.emit('new_transaction', { ...analysis, raw_message: text, month_key: monthKey, user_id: userId });
     res.json({ type: 'transaction', message: `${emoji} ${typeAr}: ${analysis.amount || '?'} ج.م\n📂 ${catAr}\n📝 ${analysis.description}${purpose}` });
   } catch (err) {
     console.error('Chat error:', err);
@@ -129,7 +180,8 @@ app.post('/api/chat', (req, res) => {
   }
 });
 
-// Transactions
+// ==================== TRANSACTIONS ====================
+
 app.get('/api/transactions', (req, res) => {
   const { type, category, month, limit = 100 } = req.query;
   const filters = { limit: parseInt(limit) };
@@ -140,25 +192,24 @@ app.get('/api/transactions', (req, res) => {
   res.json({ transactions, pagination: { total: transactions.length } });
 });
 
+// Secure: verify ownership before update
 app.put('/api/transactions/:id/date', (req, res) => {
   const { date } = req.body;
   const newDate = new Date(date);
-  updateTransactionDate(req.params.id, newDate.toISOString(), newDate.toISOString().slice(0, 7));
+  const success = updateTransactionDate(req.params.id, req.session.userId, newDate.toISOString(), newDate.toISOString().slice(0, 7));
+  if (!success) return res.status(404).json({ error: 'معاملة غير موجودة' });
   res.json({ success: true });
 });
 
+// Secure: verify ownership before delete
 app.delete('/api/transactions/:id', (req, res) => {
-  try {
-    console.log('Delete request for transaction:', req.params.id);
-    deleteTransaction(req.params.id);
-    res.json({ success: true });
-  } catch (err) {
-    console.error('Delete error:', err);
-    res.status(500).json({ error: err.message });
-  }
+  const success = deleteTransaction(req.params.id, req.session.userId);
+  if (!success) return res.status(404).json({ error: 'معاملة غير موجودة' });
+  res.json({ success: true });
 });
 
-// Summary
+// ==================== SUMMARY & CHARTS ====================
+
 app.get('/api/summary', (req, res) => {
   const userId = req.session.userId;
   const monthKey = req.query.month || new Date().toISOString().slice(0, 7);
@@ -180,7 +231,6 @@ app.get('/api/summary', (req, res) => {
   res.json({ month: monthKey, totals: { salary: salary + settings.monthly_balance, expenses, withdrawals, balance }, breakdown: Object.values(breakdown), months: [monthKey] });
 });
 
-// Charts
 app.get('/api/charts/daily', (req, res) => {
   const transactions = getTransactions(req.session.userId, { monthKey: req.query.month || new Date().toISOString().slice(0, 7), limit: 1000 });
   const daily = {};
@@ -194,7 +244,8 @@ app.get('/api/charts/daily', (req, res) => {
   res.json(Object.values(daily));
 });
 
-// Settings
+// ==================== SETTINGS ====================
+
 app.get('/api/settings', (req, res) => res.json(getUserSettings(req.session.userId)));
 app.put('/api/settings', (req, res) => {
   for (const [key, value] of Object.entries(req.body)) setSetting(`${key}_${req.session.userId}`, String(value));
@@ -203,11 +254,9 @@ app.put('/api/settings', (req, res) => {
 
 // ==================== SERVE FRONTEND ====================
 
-// Find frontend build
 const possiblePaths = [
   path.join(process.cwd(), 'frontend/dist'),
   path.join(__dirname, '../../frontend/dist'),
-  path.join(__dirname, '../../../frontend/dist'),
 ];
 
 let frontendPath = null;
@@ -219,24 +268,13 @@ for (const p of possiblePaths) {
 }
 
 if (frontendPath) {
-  console.log('📂 Serving frontend from:', frontendPath);
-  
-  // Serve static files
   app.use(express.static(frontendPath));
-  
-  // Catch-all: serve index.html for all non-API routes (MUST be after API routes)
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(frontendPath, 'index.html'));
-  });
+  app.get('*', (req, res) => res.sendFile(path.join(frontendPath, 'index.html')));
 } else {
-  console.log('⚠️ Frontend not found at:', possiblePaths);
-  // Only show this if no frontend is found
-  app.get('/', (req, res) => {
-    res.status(500).json({ error: 'Frontend not built' });
-  });
+  app.get('*', (req, res) => res.status(500).json({ error: 'Frontend not built' }));
 }
 
-// ==================== START SERVER ====================
+// ==================== START ====================
 
 io.on('connection', s => s.on('disconnect', () => {}));
 initDb();

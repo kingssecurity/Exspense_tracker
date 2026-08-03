@@ -2,7 +2,6 @@
   "name": "expense-tracker",
   "version": "1.0.0",
   "scripts": {
-    "build": "cd frontend && npm install && npm run build",
-    "start": "cd backend && npm install && node src/index.js"
+    "start": "cd frontend && npm install && npm run build && cd ../backend && npm install && node src/index.js"
   }
 }

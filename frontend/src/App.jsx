@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { FiSend, FiHome, FiList, FiBarChart2, FiSettings, FiMenu, FiX, FiLogOut, FiEdit2, FiTrash2, FiUser } from 'react-icons/fi';
+import { FiSend, FiHome, FiList, FiBarChart2, FiSettings, FiMenu, FiX, FiLogOut, FiEdit2, FiTrash2, FiUser, FiMic } from 'react-icons/fi';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 import axios from 'axios';
 
@@ -23,11 +23,16 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [monthlyBalance, setMonthlyBalance] = useState('');
+  const [budgets, setBudgets] = useState({});
+  const [savingsGoal, setSavingsGoal] = useState('');
+  const [savingsSaved, setSavingsSaved] = useState('');
   const [users, setUsers] = useState([]);
   const [editingUser, setEditingUser] = useState(null);
   const [newDisplayName, setNewDisplayName] = useState('');
   const [newPassword, setNewPassword] = useState('');
+  const [isListening, setIsListening] = useState(false);
   const chatEndRef = useRef(null);
+  const recognitionRef = useRef(null);
 
   useEffect(() => { checkAuth(); }, []);
   useEffect(() => { if (isAuth) loadData(); }, [isAuth]);
@@ -66,6 +71,9 @@ export default function App() {
       setSummary(sum.data);
       setDailyData(daily.data);
       setMonthlyBalance(settings.data.monthly_balance || '');
+      setBudgets(settings.data.budgets || {});
+      setSavingsGoal(settings.data.savings_goal || '');
+      setSavingsSaved(settings.data.savings_saved || '');
       setUsers(usersList.data);
     } catch {}
   }
@@ -95,10 +103,44 @@ export default function App() {
 
   async function handleSaveSettings() {
     try {
-      await api.put('/settings', { monthly_balance: monthlyBalance });
+      await api.put('/settings', { 
+        monthly_balance: monthlyBalance,
+        budgets: JSON.stringify(budgets),
+        savings_goal: savingsGoal,
+        savings_saved: savingsSaved
+      });
       alert('تم حفظ الإعدادات!');
       loadData();
     } catch { alert('حصل خطأ'); }
+  }
+
+  function updateBudget(category, value) {
+    setBudgets(prev => ({ ...prev, [category]: parseFloat(value) || 0 }));
+  }
+
+  function startVoiceInput() {
+    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+      alert('المتصفح مش بيدعم الإدخال الصوتي');
+      return;
+    }
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'ar-EG';
+    recognition.continuous = false;
+    recognition.interimResults = false;
+
+    recognition.onstart = () => setIsListening(true);
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      setInput(transcript);
+      setIsListening(false);
+    };
+    recognition.onerror = () => setIsListening(false);
+    recognition.onend = () => setIsListening(false);
+
+    recognition.start();
+    recognitionRef.current = recognition;
   }
 
   async function handleUpdateUser(userId) {
@@ -220,6 +262,9 @@ export default function App() {
                 <div ref={chatEndRef} />
               </div>
               <form onSubmit={handleSend} className="flex gap-2">
+                <button type="button" onClick={startVoiceInput} className={`btn-secondary px-3 ${isListening ? 'bg-red-500 animate-pulse' : ''}`}>
+                  <FiMic className="w-5 h-5" />
+                </button>
                 <input value={input} onChange={e => setInput(e.target.value)} className="input flex-1" placeholder="ابعت مصروفك أو اسألني سؤال..." disabled={loading} />
                 <button type="submit" disabled={loading || !input.trim()} className="btn-primary px-5"><FiSend className="w-5 h-5" /></button>
               </form>
@@ -331,7 +376,35 @@ export default function App() {
                   <input type="number" value={monthlyBalance} onChange={e => setMonthlyBalance(e.target.value)} className="input flex-1" placeholder="مثال: 16500" />
                   <button onClick={handleSaveSettings} className="btn-primary">حفظ</button>
                 </div>
-                <p className="text-xs text-dark-400">💡 ممكن تسجل راتبك كمان بالشات: "راتبي 16500"</p>
+              </div>
+
+              {/* Budgets */}
+              <div className="card space-y-4">
+                <h3 className="font-bold">🎯 ميزانيات بالفئة</h3>
+                <p className="text-sm text-dark-400">حدد ميزانية لكل فئة عشان تتبع صرفك</p>
+                <div className="grid grid-cols-2 gap-3">
+                  {Object.entries(categoryNames).map(([key, name]) => (
+                    <div key={key} className="flex items-center gap-2">
+                      <span className="text-sm w-20">{name}</span>
+                      <input type="number" value={budgets[key] || ''} onChange={e => updateBudget(key, e.target.value)} className="input flex-1" placeholder="0" />
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Savings Goal */}
+              <div className="card space-y-4">
+                <h3 className="font-bold">💰 هدف التوفير</h3>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-sm text-dark-400">الهدف</label>
+                    <input type="number" value={savingsGoal} onChange={e => setSavingsGoal(e.target.value)} className="input" placeholder="مثال: 5000" />
+                  </div>
+                  <div>
+                    <label className="text-sm text-dark-400">المتوفر حالياً</label>
+                    <input type="number" value={savingsSaved} onChange={e => setSavingsSaved(e.target.value)} className="input" placeholder="0" />
+                  </div>
+                </div>
               </div>
 
               {/* Examples */}

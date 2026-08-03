@@ -90,8 +90,14 @@ app.post('/api/chat', (req, res) => {
 
     if (isQuestion) {
       const transactions = db.prepare('SELECT * FROM transactions WHERE user_id = ? ORDER BY source_timestamp DESC').all(userId);
-      const settings = { monthly_balance: getSetting(`monthly_balance_${userId}`) || getSetting('monthly_balance') || '0' };
-      const answer = getSmartAnswer(text, transactions, settings);
+      const settings = { 
+        monthly_balance: getSetting(`monthly_balance_${userId}`) || getSetting('monthly_balance') || '0',
+        budgets: JSON.parse(getSetting(`budgets_${userId}`) || '{}'),
+        savings_goal: getSetting(`savings_goal_${userId}`) || '0',
+        savings_saved: getSetting(`savings_saved_${userId}`) || '0'
+      };
+      const user = getUserById(userId);
+      const answer = getSmartAnswer(text, transactions, settings, user);
       return res.json({ type: 'answer', message: answer });
     }
 
@@ -222,17 +228,18 @@ app.delete('/api/transactions/:id', (req, res) => {
 // Settings
 app.get('/api/settings', (req, res) => {
   const userId = req.session.userId;
-  res.json({ monthly_balance: parseFloat(getSetting(`monthly_balance_${userId}`) || getSetting('monthly_balance') || '0') });
+  res.json({ 
+    monthly_balance: parseFloat(getSetting(`monthly_balance_${userId}`) || getSetting('monthly_balance') || '0'),
+    budgets: JSON.parse(getSetting(`budgets_${userId}`) || '{}'),
+    savings_goal: getSetting(`savings_goal_${userId}`) || '0',
+    savings_saved: getSetting(`savings_saved_${userId}`) || '0'
+  });
 });
 
 app.put('/api/settings', (req, res) => {
   const userId = req.session.userId;
   Object.entries(req.body).forEach(([k, v]) => {
-    if (k === 'monthly_balance') {
-      setSetting(`monthly_balance_${userId}`, String(v));
-    } else {
-      setSetting(k, String(v));
-    }
+    setSetting(`${k}_${userId}`, String(v));
   });
   res.json({ success: true });
 });

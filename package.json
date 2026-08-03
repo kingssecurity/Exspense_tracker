@@ -1,8 +1,11 @@
 {
   "name": "expense-tracker",
   "version": "1.0.0",
+  "engines": {
+    "node": "18.x"
+  },
   "scripts": {
     "build": "cd frontend && npm install && npm run build",
-    "start": "cd backend && npm install && node src/index.js"
+    "start": "cd backend && npm install && npm run postinstall && node src/index.js"
   }
 }

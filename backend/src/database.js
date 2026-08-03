@@ -17,8 +17,35 @@ export function getDb() {
     try {
       db.prepare('SELECT withdrawal_purpose FROM transactions LIMIT 1').get();
     } catch {
-      db.exec('ALTER TABLE transactions ADD COLUMN withdrawal_purpose TEXT');
+      try { db.exec('ALTER TABLE transactions ADD COLUMN withdrawal_purpose TEXT'); } catch {}
     }
+    
+    // Recreate table with proper schema if needed
+    try {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS transactions_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          raw_message TEXT NOT NULL,
+          amount REAL,
+          type TEXT,
+          category TEXT,
+          description TEXT,
+          withdrawal_purpose TEXT,
+          source_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          needs_review BOOLEAN DEFAULT 0,
+          confidence REAL DEFAULT 1.0,
+          month_key TEXT
+        );
+      `);
+      
+      // Copy data from old table if exists
+      try {
+        db.exec(`INSERT OR IGNORE INTO transactions_new SELECT * FROM transactions`);
+        db.exec(`DROP TABLE IF EXISTS transactions`);
+        db.exec(`ALTER TABLE transactions_new RENAME TO transactions`);
+      } catch {}
+    } catch {}
   }
   return db;
 }

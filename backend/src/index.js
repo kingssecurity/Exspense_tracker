@@ -102,8 +102,8 @@ app.post('/api/chat', (req, res) => {
     io.emit('new_transaction', { ...analysis, raw_message: text, month_key: monthKey });
     res.json({ type: 'transaction', message: responseMessage, data: analysis });
   } catch (err) {
-    console.error('Chat error:', err.message);
-    res.status(500).json({ error: 'Error processing message' });
+    console.error('Chat error:', err.message, err.stack);
+    res.status(500).json({ error: 'Error processing message', details: err.message });
   }
 });
 

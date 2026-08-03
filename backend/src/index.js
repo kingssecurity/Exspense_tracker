@@ -69,7 +69,8 @@ app.post('/api/chat', (req, res) => {
 
     if (isQuestion) {
       const transactions = db.prepare('SELECT * FROM transactions ORDER BY source_timestamp DESC').all();
-      const answer = getSmartAnswer(text, transactions);
+      const settings = { monthly_balance: getSetting('monthly_balance') || '0' };
+      const answer = getSmartAnswer(text, transactions, settings);
       return res.json({ type: 'answer', message: answer });
     }
 
@@ -78,17 +79,18 @@ app.post('/api/chat', (req, res) => {
     const monthKey = new Date().toISOString().slice(0, 7);
 
     db.prepare(`
-      INSERT INTO transactions (raw_message, amount, type, category, description, month_key, needs_review, confidence)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(text, analysis.amount, analysis.type, analysis.category, analysis.description, monthKey, analysis.needsReview, analysis.confidence);
+      INSERT INTO transactions (raw_message, amount, type, category, description, withdrawal_purpose, month_key, needs_review, confidence)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(text, analysis.amount, analysis.type, analysis.category, analysis.description, analysis.withdrawalPurpose, monthKey, analysis.needsReview, analysis.confidence);
 
-    const emoji = analysis.type === 'expense' ? '💸' : '🏧';
-    const typeAr = analysis.type === 'expense' ? 'مصروف' : 'سحب';
+    const emoji = analysis.type === 'expense' ? '💸' : analysis.type === 'withdrawal' ? '🏧' : '💵';
+    const typeAr = analysis.type === 'expense' ? 'مصروف' : analysis.type === 'withdrawal' ? 'سحب' : 'راتب';
     const categoryNames = { work:'شغل', home:'بيت', transport:'مواصلات', health:'صحة', education:'تعليم', bills:'فواتير', shopping:'تسوق', other:'أخرى' };
     const catAr = categoryNames[analysis.category] || 'أخرى';
     const reviewNote = analysis.needsReview ? '\n⚠️ محتاج مراجعة (مفيش مبلغ واضح)' : '';
+    const purposeNote = analysis.withdrawalPurpose ? `\n🎯 عشان: ${analysis.withdrawalPurpose}` : '';
 
-    const responseMessage = `${emoji} ${typeAr}: ${analysis.amount || '?'} ج.م\n📂 ${catAr}\n📝 ${analysis.description}${reviewNote}`;
+    const responseMessage = `${emoji} ${typeAr}: ${analysis.amount || '?'} ج.م\n📂 ${catAr}\n📝 ${analysis.description}${purposeNote}${reviewNote}`;
 
     io.emit('new_transaction', { ...analysis, raw_message: text, month_key: monthKey });
     res.json({ type: 'transaction', message: responseMessage, data: analysis });
@@ -132,7 +134,10 @@ app.get('/api/summary', (req, res) => {
     const months = db.prepare('SELECT DISTINCT month_key FROM transactions WHERE month_key IS NOT NULL ORDER BY month_key DESC').all().map(m => m.month_key);
     const expenses = totals.find(t => t.type === 'expense')?.total || 0;
     const withdrawals = totals.find(t => t.type === 'withdrawal')?.total || 0;
-    res.json({ month: monthKey, totals: { expenses, withdrawals, balance: withdrawals - expenses }, breakdown, months });
+    const salary = totals.find(t => t.type === 'salary')?.total || 0;
+    const monthlyBalance = parseFloat(getSetting('monthly_balance') || '0');
+    const balance = (salary + monthlyBalance) - expenses;
+    res.json({ month: monthKey, totals: { salary: salary + monthlyBalance, expenses, withdrawals, balance }, breakdown, months });
   } catch (err) {
     console.error('Summary error:', err.message);
     res.json({ month: new Date().toISOString().slice(0,7), totals: { expenses: 0, withdrawals: 0, balance: 0 }, breakdown: [], months: [] });

@@ -12,6 +12,13 @@ export function getDb() {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     db = new Database(dbPath);
     db.pragma('journal_mode = WAL');
+    
+    // Add withdrawal_purpose column if it doesn't exist
+    try {
+      db.prepare('SELECT withdrawal_purpose FROM transactions LIMIT 1').get();
+    } catch {
+      db.exec('ALTER TABLE transactions ADD COLUMN withdrawal_purpose TEXT');
+    }
   }
   return db;
 }
@@ -26,6 +33,7 @@ export function initDb() {
       type TEXT,
       category TEXT,
       description TEXT,
+      withdrawal_purpose TEXT,
       source_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       needs_review BOOLEAN DEFAULT 0,

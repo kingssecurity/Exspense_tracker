@@ -19,6 +19,7 @@ export default function App() {
   const [dailyData, setDailyData] = useState([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [monthlyBalance, setMonthlyBalance] = useState('');
   const chatEndRef = useRef(null);
 
   useEffect(() => { checkAuth(); }, []);
@@ -36,15 +37,25 @@ export default function App() {
 
   async function loadData() {
     try {
-      const [tx, sum, daily] = await Promise.all([
+      const [tx, sum, daily, settings] = await Promise.all([
         api.get('/transactions?limit=100'),
         api.get('/summary'),
-        api.get('/charts/daily')
+        api.get('/charts/daily'),
+        api.get('/settings')
       ]);
       setTransactions(tx.data.transactions);
       setSummary(sum.data);
       setDailyData(daily.data);
+      setMonthlyBalance(settings.data.monthly_balance || '');
     } catch {}
+  }
+
+  async function handleSaveSettings() {
+    try {
+      await api.put('/settings', { monthly_balance: monthlyBalance });
+      alert('تم حفظ الإعدادات!');
+      loadData();
+    } catch { alert('حصل خطأ'); }
   }
 
   async function handleSend(e) {
@@ -104,6 +115,7 @@ export default function App() {
               { id:'dashboard', icon:FiHome, label:'الرئيسية' },
               { id:'transactions', icon:FiList, label:'المعاملات' },
               { id:'charts', icon:FiBarChart2, label:'تحليلات' },
+              { id:'settings', icon:FiSettings, label:'الإعدادات' },
             ].map(item => (
               <button key={item.id} onClick={() => { setPage(item.id); setSidebarOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${page === item.id ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30' : 'text-dark-300 hover:bg-dark-800'}`}>
                 <item.icon className="w-5 h-5" />
@@ -166,10 +178,11 @@ export default function App() {
           {page === 'dashboard' && summary && (
             <div className="space-y-6">
               <h2 className="text-2xl font-bold">📊 ملخص الشهر</h2>
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="card text-center"><p className="text-2xl font-bold text-green-400">{summary.totals.salary || 0}</p><p className="text-sm text-dark-400">💵 الراتب</p></div>
                 <div className="card text-center"><p className="text-2xl font-bold text-yellow-400">{summary.totals.withdrawals}</p><p className="text-sm text-dark-400">🏧 مسحوب</p></div>
                 <div className="card text-center"><p className="text-2xl font-bold text-red-400">{summary.totals.expenses}</p><p className="text-sm text-dark-400">💸 مصروف</p></div>
-                <div className="card text-center"><p className={`text-2xl font-bold ${summary.totals.balance >= 0 ? 'text-green-400' : 'text-red-400'}`}>{summary.totals.balance}</p><p className="text-sm text-dark-400">💵 متبقي</p></div>
+                <div className="card text-center"><p className={`text-2xl font-bold ${summary.totals.balance >= 0 ? 'text-green-400' : 'text-red-400'}`}>{summary.totals.balance}</p><p className="text-sm text-dark-400">💰 متبقي</p></div>
               </div>
               {summary.breakdown.length > 0 && (
                 <div className="card">
@@ -185,8 +198,17 @@ export default function App() {
                 <h3 className="font-bold mb-3">آخر المعاملات</h3>
                 {transactions.slice(0, 5).map(t => (
                   <div key={t.id} className="flex items-center justify-between py-2 border-b border-dark-700/50 last:border-0">
-                    <div><p className="text-sm">{t.description}</p><p className="text-xs text-dark-400">{categoryNames[t.category]}</p></div>
-                    <p className={`font-bold ${t.type === 'expense' ? 'text-red-400' : 'text-yellow-400'}`}>{t.amount} ج.م</p>
+                    <div>
+                      <p className="text-sm">{t.description}</p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-xs text-dark-400">{categoryNames[t.category]}</span>
+                        {t.withdrawal_purpose && <span className="text-xs text-blue-400">🎯 {t.withdrawal_purpose}</span>}
+                      </div>
+                    </div>
+                    <div className="text-left">
+                      <p className={`font-bold ${t.type === 'expense' ? 'text-red-400' : t.type === 'withdrawal' ? 'text-yellow-400' : 'text-green-400'}`}>{t.amount} ج.م</p>
+                      <p className="text-xs text-dark-400">{t.type === 'expense' ? '💸' : t.type === 'withdrawal' ? '🏧' : '💵'}</p>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -201,17 +223,51 @@ export default function App() {
                 <div key={t.id} className="card flex items-center justify-between">
                   <div className="flex-1">
                     <p className="text-sm">{t.raw_message}</p>
-                    <div className="flex gap-2 mt-1">
-                      <span className={`text-xs px-2 py-0.5 rounded ${t.type === 'expense' ? 'bg-red-500/20 text-red-400' : 'bg-yellow-500/20 text-yellow-400'}`}>{t.type === 'expense' ? 'مصروف' : 'سحب'}</span>
+                    <div className="flex gap-2 mt-1 flex-wrap">
+                      <span className={`text-xs px-2 py-0.5 rounded ${t.type === 'expense' ? 'bg-red-500/20 text-red-400' : t.type === 'withdrawal' ? 'bg-yellow-500/20 text-yellow-400' : 'bg-green-500/20 text-green-400'}`}>{t.type === 'expense' ? 'مصروف' : t.type === 'withdrawal' ? 'سحب' : 'راتب'}</span>
                       <span className="text-xs px-2 py-0.5 rounded bg-blue-500/20 text-blue-400">{categoryNames[t.category]}</span>
+                      {t.withdrawal_purpose && <span className="text-xs px-2 py-0.5 rounded bg-purple-500/20 text-purple-400">🎯 {t.withdrawal_purpose}</span>}
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <p className={`font-bold ${t.type === 'expense' ? 'text-red-400' : 'text-yellow-400'}`}>{t.amount} ج.م</p>
+                    <p className={`font-bold ${t.type === 'expense' ? 'text-red-400' : t.type === 'withdrawal' ? 'text-yellow-400' : 'text-green-400'}`}>{t.amount} ج.م</p>
                     <button onClick={() => handleDelete(t.id)} className="p-1 text-dark-400 hover:text-red-400"><FiTrash2 /></button>
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* Settings */}
+          {page === 'settings' && (
+            <div className="space-y-6">
+              <h2 className="text-2xl font-bold">⚙️ الإعدادات</h2>
+              <div className="card space-y-4">
+                <h3 className="font-bold">💵 الراتب الشهري</h3>
+                <p className="text-sm text-dark-400">حط راتبك هنا عشان يتحسبلك المتبقي بعد المصروفات</p>
+                <div className="flex gap-2">
+                  <input type="number" value={monthlyBalance} onChange={e => setMonthlyBalance(e.target.value)} className="input flex-1" placeholder="مثال: 10000" />
+                  <button onClick={handleSaveSettings} className="btn-primary">حفظ</button>
+                </div>
+                <p className="text-xs text-dark-400">💡 ممكن تسجل راتبك كمان بالشات: "راتبي 10000"</p>
+              </div>
+              <div className="card space-y-4">
+                <h3 className="font-bold">🔑 تغيير كلمة المرور</h3>
+                <div className="flex gap-2">
+                  <input type="password" id="newPassword" className="input flex-1" placeholder="كلمة مرور جديدة" />
+                  <button onClick={async () => { const pw = document.getElementById('newPassword').value; if (pw) { await api.post('/auth/password', { newPassword: pw }); alert('تم التغيير!'); } }} className="btn-secondary">تغيير</button>
+                </div>
+              </div>
+              <div className="card">
+                <h3 className="font-bold mb-3">💡 أمثلة للتسجيل</h3>
+                <div className="space-y-2 text-sm text-dark-300">
+                  <p>• <span className="text-green-400">راتبي 10000</span> - لتسجيل الراتب</p>
+                  <p>• <span className="text-red-400">صرفت 150 جنيه أكل</span> - لمصروف</p>
+                  <p>• <span className="text-yellow-400">سحبت 2000 من الراتب عشان مصاريف البيت</span> - لسحب مع السبب</p>
+                  <p>• <span className="text-blue-400">رصيدي كام؟</span> - لسؤال عن الرصيد</p>
+                  <p>• <span className="text-purple-400">تفصيل المصاريف</span> - لتوزيع المصروفات</p>
+                </div>
+              </div>
             </div>
           )}
 

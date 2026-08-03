@@ -148,8 +148,14 @@ app.put('/api/transactions/:id/date', (req, res) => {
 });
 
 app.delete('/api/transactions/:id', (req, res) => {
-  deleteTransaction(req.params.id);
-  res.json({ success: true });
+  try {
+    console.log('Delete request for transaction:', req.params.id);
+    deleteTransaction(req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Delete error:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Summary

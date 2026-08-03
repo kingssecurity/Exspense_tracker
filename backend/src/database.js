@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 
-// Use /tmp for Railway (persists during deployment)
+// Use a persistent path - /data if available, otherwise /tmp
 const dbPath = process.env.DB_PATH || '/tmp/expense-tracker.db';
 
 let db;
@@ -56,6 +56,7 @@ export function getDb() {
     if (userCount === 0) {
       db.prepare('INSERT INTO users (id, username, password, display_name) VALUES (?, ?, ?, ?)').run('user1', 'ahmed', '1234', 'أحمد');
       db.prepare('INSERT INTO users (id, username, password, display_name) VALUES (?, ?, ?, ?)').run('user2', 'sara', '1234', 'سارة');
+      console.log('✅ Default users created');
     }
   }
   return db;
@@ -64,12 +65,15 @@ export function getDb() {
 // Initialize database (safe - won't delete anything)
 export function initDb() {
   getDb(); // This will create tables if needed
-  console.log('✅ Database ready');
+  console.log('✅ Database ready at:', dbPath);
 }
 
 // User operations
 export function getUser(username, password) {
-  return getDb().prepare('SELECT * FROM users WHERE username = ? AND password = ?').get(username, password);
+  console.log('getUser called:', username, password);
+  const result = getDb().prepare('SELECT * FROM users WHERE username = ? AND password = ?').get(username, password);
+  console.log('getUser result:', result);
+  return result;
 }
 
 export function getUserById(id) {
@@ -78,11 +82,14 @@ export function getUserById(id) {
 
 export function updateUser(id, data) {
   const db = getDb();
+  console.log('updateUser called:', id, data);
   if (data.password) {
     db.prepare('UPDATE users SET password = ? WHERE id = ?').run(data.password, id);
+    console.log('Password updated for user:', id);
   }
   if (data.displayName) {
     db.prepare('UPDATE users SET display_name = ? WHERE id = ?').run(data.displayName, id);
+    console.log('Display name updated for user:', id);
   }
 }
 
@@ -119,7 +126,10 @@ export function updateTransactionDate(id, date, monthKey) {
 }
 
 export function deleteTransaction(id) {
-  getDb().prepare('DELETE FROM transactions WHERE id = ?').run(id);
+  console.log('deleteTransaction called:', id);
+  const result = getDb().prepare('DELETE FROM transactions WHERE id = ?').run(id);
+  console.log('deleteTransaction result:', result);
+  return result;
 }
 
 // Settings operations

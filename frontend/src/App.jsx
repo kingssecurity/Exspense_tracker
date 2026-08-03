@@ -416,7 +416,7 @@ export default function App() {
                     </div>
                     <div className="flex items-center gap-3">
                       <p className={`font-bold text-lg ${t.type === 'expense' ? 'text-red-400' : t.type === 'withdrawal' ? 'text-yellow-400' : 'text-green-400'}`}>{t.amount} ج.م</p>
-                      <button onClick={() => handleDelete(t.id)} className="p-2 text-dark-400 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"><FiTrash2 /></button>
+                      <button onClick={() => handleDelete(t.id)} className="p-2 text-dark-400 hover:text-red-400 transition-all"><FiTrash2 /></button>
                     </div>
                   </div>
                 </div>

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { FiSend, FiHome, FiList, FiBarChart2, FiSettings, FiMenu, FiX, FiLogOut, FiEdit2, FiTrash2 } from 'react-icons/fi';
+import { FiSend, FiHome, FiList, FiBarChart2, FiSettings, FiMenu, FiX, FiLogOut, FiEdit2, FiTrash2, FiUser } from 'react-icons/fi';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 import axios from 'axios';
 
@@ -10,7 +10,10 @@ const categoryColors = { work:'#3b82f6', home:'#22c55e', transport:'#f59e0b', he
 
 export default function App() {
   const [isAuth, setIsAuth] = useState(false);
+  const [user, setUser] = useState(null);
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
   const [page, setPage] = useState('chat');
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
@@ -20,6 +23,10 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [monthlyBalance, setMonthlyBalance] = useState('');
+  const [users, setUsers] = useState([]);
+  const [editingUser, setEditingUser] = useState(null);
+  const [newDisplayName, setNewDisplayName] = useState('');
+  const [newPassword, setNewPassword] = useState('');
   const chatEndRef = useRef(null);
 
   useEffect(() => { checkAuth(); }, []);
@@ -27,35 +34,40 @@ export default function App() {
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
   async function checkAuth() {
-    try { const r = await api.get('/auth/check'); setIsAuth(r.data.isAuthenticated); } catch {}
+    try { 
+      const r = await api.get('/auth/check'); 
+      setIsAuth(r.data.isAuthenticated); 
+      if (r.data.user) setUser(r.data.user);
+    } catch {}
   }
 
   async function handleLogin(e) {
     e.preventDefault();
-    try { await api.post('/auth/login', { password }); setIsAuth(true); } catch { alert('كلمة المرور غلط'); }
+    setLoginError('');
+    try { 
+      const r = await api.post('/auth/login', { username, password }); 
+      setIsAuth(true); 
+      setUser(r.data.user);
+    } catch (err) { 
+      setLoginError(err.response?.data?.error || 'خطأ في تسجيل الدخول'); 
+    }
   }
 
   async function loadData() {
     try {
-      const [tx, sum, daily, settings] = await Promise.all([
+      const [tx, sum, daily, settings, usersList] = await Promise.all([
         api.get('/transactions?limit=100'),
         api.get('/summary'),
         api.get('/charts/daily'),
-        api.get('/settings')
+        api.get('/settings'),
+        api.get('/users')
       ]);
       setTransactions(tx.data.transactions);
       setSummary(sum.data);
       setDailyData(daily.data);
       setMonthlyBalance(settings.data.monthly_balance || '');
+      setUsers(usersList.data);
     } catch {}
-  }
-
-  async function handleSaveSettings() {
-    try {
-      await api.put('/settings', { monthly_balance: monthlyBalance });
-      alert('تم حفظ الإعدادات!');
-      loadData();
-    } catch { alert('حصل خطأ'); }
   }
 
   async function handleSend(e) {
@@ -81,6 +93,28 @@ export default function App() {
     loadData();
   }
 
+  async function handleSaveSettings() {
+    try {
+      await api.put('/settings', { monthly_balance: monthlyBalance });
+      alert('تم حفظ الإعدادات!');
+      loadData();
+    } catch { alert('حصل خطأ'); }
+  }
+
+  async function handleUpdateUser(userId) {
+    try {
+      const data = {};
+      if (newPassword) data.password = newPassword;
+      if (newDisplayName) data.displayName = newDisplayName;
+      await api.put(`/users/${userId}`, data);
+      alert('تم التحديث!');
+      setEditingUser(null);
+      setNewPassword('');
+      setNewDisplayName('');
+      loadData();
+    } catch { alert('حصل خطأ'); }
+  }
+
   if (!isAuth) return (
     <div className="min-h-screen flex items-center justify-center p-4">
       <div className="w-full max-w-sm">
@@ -90,8 +124,17 @@ export default function App() {
           <p className="text-dark-400 mt-2">تتبع مصاريفك بسهولة</p>
         </div>
         <form onSubmit={handleLogin} className="card space-y-4">
-          <input type="password" value={password} onChange={e => setPassword(e.target.value)} className="input" placeholder="كلمة المرور" autoFocus />
+          <div>
+            <label className="block text-sm text-dark-400 mb-1">اسم المستخدم</label>
+            <input type="text" value={username} onChange={e => setUsername(e.target.value)} className="input" placeholder="ahmed أو sara" autoFocus />
+          </div>
+          <div>
+            <label className="block text-sm text-dark-400 mb-1">كلمة المرور</label>
+            <input type="password" value={password} onChange={e => setPassword(e.target.value)} className="input" placeholder="1234" />
+          </div>
+          {loginError && <p className="text-red-400 text-sm">{loginError}</p>}
           <button type="submit" className="btn-primary w-full">دخول</button>
+          <p className="text-xs text-dark-400 text-center">المستخدمين الافتراضيين: ahmed و sara (الباسورد: 1234)</p>
         </form>
       </div>
     </div>
@@ -106,7 +149,15 @@ export default function App() {
       <aside className={`fixed inset-y-0 right-0 z-50 w-64 bg-dark-900 border-l border-dark-700 transform transition-transform lg:translate-x-0 lg:static ${sidebarOpen ? 'translate-x-0' : 'translate-x-full lg:translate-x-0'}`}>
         <div className="flex flex-col h-full">
           <div className="p-6 border-b border-dark-700">
-            <h1 className="text-2xl font-bold text-blue-400">مصروفاتي 💰</h1>
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center">
+                <FiUser className="w-5 h-5" />
+              </div>
+              <div>
+                <h1 className="text-xl font-bold text-blue-400">مصروفاتي</h1>
+                <p className="text-xs text-dark-400">{user?.displayName || user?.username}</p>
+              </div>
+            </div>
             <button onClick={() => setSidebarOpen(false)} className="lg:hidden absolute top-4 left-4"><FiX /></button>
           </div>
           <nav className="flex-1 p-4 space-y-1">
@@ -124,7 +175,7 @@ export default function App() {
             ))}
           </nav>
           <div className="p-4 border-t border-dark-700">
-            <button onClick={() => { api.post('/auth/logout'); setIsAuth(false); }} className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-dark-400 hover:bg-dark-800 hover:text-red-400">
+            <button onClick={() => { api.post('/auth/logout'); setIsAuth(false); setUser(null); }} className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-dark-400 hover:bg-dark-800 hover:text-red-400">
               <FiLogOut className="w-5 h-5" /><span>خروج</span>
             </button>
           </div>
@@ -148,11 +199,12 @@ export default function App() {
                 {messages.length === 0 && (
                   <div className="text-center text-dark-400 mt-20">
                     <div className="text-5xl mb-4">💬</div>
-                    <p className="text-xl font-bold mb-2">أهلاً!</p>
+                    <p className="text-xl font-bold mb-2">أهلاً {user?.displayName || user?.username}!</p>
                     <p>ابعتلي مصروفك وأنا أسجله</p>
                     <div className="mt-6 space-y-2 text-sm">
+                      <p className="bg-dark-800 inline-block px-3 py-1 rounded-lg">راتبي 16500</p>
+                      <p className="bg-dark-800 inline-block px-3 py-1 rounded-lg">سحبت 3000 من الراتب</p>
                       <p className="bg-dark-800 inline-block px-3 py-1 rounded-lg">صرفت 150 جنيه أكل</p>
-                      <p className="bg-dark-800 inline-block px-3 py-1 rounded-lg">سحبت 2000 من الراتب</p>
                       <p className="bg-dark-800 inline-block px-3 py-1 rounded-lg">رصيدي كام؟</p>
                     </div>
                   </div>
@@ -177,7 +229,7 @@ export default function App() {
           {/* Dashboard */}
           {page === 'dashboard' && summary && (
             <div className="space-y-6">
-              <h2 className="text-2xl font-bold">📊 ملخص الشهر</h2>
+              <h2 className="text-2xl font-bold">📊 ملخص الشهر - {user?.displayName}</h2>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div className="card text-center"><p className="text-2xl font-bold text-green-400">{summary.totals.salary || 0}</p><p className="text-sm text-dark-400">💵 الراتب</p></div>
                 <div className="card text-center"><p className="text-2xl font-bold text-yellow-400">{summary.totals.withdrawals}</p><p className="text-sm text-dark-400">🏧 سلف</p></div>
@@ -218,7 +270,7 @@ export default function App() {
           {/* Transactions */}
           {page === 'transactions' && (
             <div className="space-y-4">
-              <h2 className="text-2xl font-bold">📋 المعاملات</h2>
+              <h2 className="text-2xl font-bold">📋 المعاملات - {user?.displayName}</h2>
               {transactions.length === 0 ? <p className="text-dark-400 text-center py-8">📭 مفيش معاملات</p> : transactions.map(t => (
                 <div key={t.id} className="card flex items-center justify-between">
                   <div className="flex-1">
@@ -242,30 +294,56 @@ export default function App() {
           {page === 'settings' && (
             <div className="space-y-6">
               <h2 className="text-2xl font-bold">⚙️ الإعدادات</h2>
+              
+              {/* User Settings */}
+              <div className="card space-y-4">
+                <h3 className="font-bold">👤 إعدادات المستخدمين</h3>
+                {users.map(u => (
+                  <div key={u.id} className="flex items-center justify-between p-3 bg-dark-800 rounded-lg">
+                    <div>
+                      <p className="font-bold">{u.display_name}</p>
+                      <p className="text-sm text-dark-400">@{u.username}</p>
+                    </div>
+                    <button onClick={() => { setEditingUser(u.id); setNewDisplayName(u.display_name); }} className="btn-secondary text-sm">
+                      <FiEdit2 className="w-4 h-4" /> تعديل
+                    </button>
+                  </div>
+                ))}
+                
+                {editingUser && (
+                  <div className="p-4 bg-dark-800 rounded-lg space-y-3">
+                    <h4 className="font-bold">تعديل المستخدم</h4>
+                    <input type="text" value={newDisplayName} onChange={e => setNewDisplayName(e.target.value)} className="input" placeholder="الاسم الجديد" />
+                    <input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} className="input" placeholder="كلمة مرور جديدة (اختياري)" />
+                    <div className="flex gap-2">
+                      <button onClick={() => handleUpdateUser(editingUser)} className="btn-primary">حفظ</button>
+                      <button onClick={() => { setEditingUser(null); setNewPassword(''); setNewDisplayName(''); }} className="btn-secondary">إلغاء</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Monthly Balance */}
               <div className="card space-y-4">
                 <h3 className="font-bold">💵 الراتب الشهري</h3>
-                <p className="text-sm text-dark-400">حط راتبك هنا عشان يتحسبلك المتبقي بعد المصروفات</p>
+                <p className="text-sm text-dark-400">حط راتبك هنا عشان يتحسبلك المتبقي بعد السحوبات</p>
                 <div className="flex gap-2">
-                  <input type="number" value={monthlyBalance} onChange={e => setMonthlyBalance(e.target.value)} className="input flex-1" placeholder="مثال: 10000" />
+                  <input type="number" value={monthlyBalance} onChange={e => setMonthlyBalance(e.target.value)} className="input flex-1" placeholder="مثال: 16500" />
                   <button onClick={handleSaveSettings} className="btn-primary">حفظ</button>
                 </div>
-                <p className="text-xs text-dark-400">💡 ممكن تسجل راتبك كمان بالشات: "راتبي 10000"</p>
+                <p className="text-xs text-dark-400">💡 ممكن تسجل راتبك كمان بالشات: "راتبي 16500"</p>
               </div>
-              <div className="card space-y-4">
-                <h3 className="font-bold">🔑 تغيير كلمة المرور</h3>
-                <div className="flex gap-2">
-                  <input type="password" id="newPassword" className="input flex-1" placeholder="كلمة مرور جديدة" />
-                  <button onClick={async () => { const pw = document.getElementById('newPassword').value; if (pw) { await api.post('/auth/password', { newPassword: pw }); alert('تم التغيير!'); } }} className="btn-secondary">تغيير</button>
-                </div>
-              </div>
+
+              {/* Examples */}
               <div className="card">
                 <h3 className="font-bold mb-3">💡 أمثلة للتسجيل</h3>
                 <div className="space-y-2 text-sm text-dark-300">
-                  <p>• <span className="text-green-400">راتبي 10000</span> - لتسجيل الراتب</p>
-                  <p>• <span className="text-red-400">صرفت 150 جنيه أكل</span> - لمصروف</p>
-                  <p>• <span className="text-yellow-400">سحبت 2000 من الراتب عشان مصاريف البيت</span> - لسحب مع السبب</p>
+                  <p>• <span className="text-green-400">راتبي 16500</span> - لتسجيل الراتب</p>
+                  <p>• <span className="text-yellow-400">سحبت 3000 من الراتب</span> - لسحب سلفة (تُطرح من الراتب)</p>
+                  <p>• <span className="text-yellow-400">سحبت 2000 عشان مصاريف البيت</span> - سلفة مع السبب</p>
+                  <p>• <span className="text-red-400">صرفت 150 جنيه أكل</span> - لمصروف (منفصل)</p>
+                  <p>• <span className="text-red-400">صرفت 200 جنيه يوم 7 أكل</span> - مصروف بتاريخ معين</p>
                   <p>• <span className="text-blue-400">رصيدي كام؟</span> - لسؤال عن الرصيد</p>
-                  <p>• <span className="text-purple-400">تفصيل المصاريف</span> - لتوزيع المصروفات</p>
                 </div>
               </div>
             </div>
@@ -274,13 +352,13 @@ export default function App() {
           {/* Charts */}
           {page === 'charts' && (
             <div className="space-y-6">
-              <h2 className="text-2xl font-bold">📈 تحليلات</h2>
+              <h2 className="text-2xl font-bold">📈 تحليلات - {user?.displayName}</h2>
               {dailyData.length > 0 && (
                 <div className="card">
                   <h3 className="font-bold mb-4">المصروفات اليومية</h3>
                   <ResponsiveContainer width="100%" height={250}>
                     <BarChart data={(() => { const grouped = {}; dailyData.forEach(d => { if (!grouped[d.date]) grouped[d.date] = { date: d.date, expenses: 0, withdrawals: 0 }; grouped[d.date][d.type === 'expense' ? 'expenses' : 'withdrawals'] += d.total; }); return Object.values(grouped); })()}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#334155" /><XAxis dataKey="date" stroke="#94a3b8" tickFormatter={v => new Date(v).getDate()} /><YAxis stroke="#94a3b8" /><Tooltip contentStyle={{ background:'#1e293b', border:'1px solid #334155', borderRadius:8 }} /><Bar dataKey="expenses" name="مصروفات" fill="#ef4444" /><Bar dataKey="withdrawals" name="مسحوبات" fill="#f59e0b" />
+                      <CartesianGrid strokeDasharray="3 3" stroke="#334155" /><XAxis dataKey="date" stroke="#94a3b8" tickFormatter={v => new Date(v).getDate()} /><YAxis stroke="#94a3b8" /><Tooltip contentStyle={{ background:'#1e293b', border:'1px solid #334155', borderRadius:8 }} /><Bar dataKey="expenses" name="مصروفات" fill="#ef4444" /><Bar dataKey="withdrawals" name="سلف" fill="#f59e0b" />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>

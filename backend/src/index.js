@@ -5,7 +5,7 @@ import { Server } from 'socket.io';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { initDb, getDb, getSetting, setSetting } from './database.js';
+import { initDb, getDb, getSetting, setSetting, getUser, getUserById, updateUser, getAllUsers } from './database.js';
 import { analyzeMessage, getSmartAnswer } from './analyzer.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -33,19 +33,28 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 
 // Auth
 app.post('/api/auth/login', (req, res) => {
-  const { password } = req.body;
-  
-  // For now, accept any password with 4+ characters
-  // This is a personal app, so security is not critical
-  if (password && password.length >= 4) {
+  const { username, password } = req.body;
+  const user = getUser(username, password);
+  if (user) {
     req.session.auth = true;
-    return res.json({ success: true });
+    req.session.userId = user.id;
+    req.session.username = user.username;
+    req.session.displayName = user.display_name;
+    return res.json({ success: true, user: { id: user.id, username: user.username, displayName: user.display_name } });
   }
-  
-  res.status(401).json({ error: 'Wrong password' });
+  res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غلط' });
 });
-app.post('/api/auth/logout', (req, res) => { req.session.auth = false; res.json({ success: true }); });
-app.get('/api/auth/check', (req, res) => res.json({ isAuthenticated: req.session?.auth === true }));
+
+app.post('/api/auth/logout', (req, res) => { 
+  req.session.auth = false; 
+  req.session.userId = null;
+  res.json({ success: true }); 
+});
+
+app.get('/api/auth/check', (req, res) => res.json({ 
+  isAuthenticated: req.session?.auth === true,
+  user: req.session?.userId ? { id: req.session.userId, username: req.session.username, displayName: req.session.displayName } : null
+}));
 
 // Auth middleware
 app.use('/api', (req, res, next) => {
@@ -54,10 +63,14 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-// Change password
-app.post('/api/auth/password', (req, res) => {
-  const { newPassword } = req.body;
-  if (newPassword) setSetting('app_password', newPassword);
+// Users management
+app.get('/api/users', (req, res) => {
+  res.json(getAllUsers());
+});
+
+app.put('/api/users/:id', (req, res) => {
+  const { password, displayName } = req.body;
+  updateUser(req.params.id, { password, display_name: displayName });
   res.json({ success: true });
 });
 
@@ -69,14 +82,15 @@ app.post('/api/chat', (req, res) => {
 
     const db = getDb();
     const text = message.trim();
+    const userId = req.session.userId;
 
     // Check if it's a question
     const questionWords = ['كام', 'قد ايه', 'رصيد', 'متبقي', 'باقي', 'أكتر', 'اكثر', 'تفصيل', 'تفاصيل', 'عدد', 'اليوم', 'نهارده', 'إيه', 'ايه', 'ازاي', 'ليه', 'امتى'];
     const isQuestion = questionWords.some(w => text.includes(w)) || text.includes('?') || text.includes('؟');
 
     if (isQuestion) {
-      const transactions = db.prepare('SELECT * FROM transactions ORDER BY source_timestamp DESC').all();
-      const settings = { monthly_balance: getSetting('monthly_balance') || '0' };
+      const transactions = db.prepare('SELECT * FROM transactions WHERE user_id = ? ORDER BY source_timestamp DESC').all(userId);
+      const settings = { monthly_balance: getSetting(`monthly_balance_${userId}`) || getSetting('monthly_balance') || '0' };
       const answer = getSmartAnswer(text, transactions, settings);
       return res.json({ type: 'answer', message: answer });
     }
@@ -88,9 +102,9 @@ app.post('/api/chat', (req, res) => {
     const sourceTimestamp = transactionDate.toISOString();
 
     db.prepare(`
-      INSERT INTO transactions (raw_message, amount, type, category, description, withdrawal_purpose, source_timestamp, month_key, needs_review, confidence)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(text, analysis.amount, analysis.type, analysis.category, analysis.description, analysis.withdrawalPurpose, sourceTimestamp, monthKey, analysis.needsReview, analysis.confidence);
+      INSERT INTO transactions (raw_message, amount, type, category, description, withdrawal_purpose, user_id, source_timestamp, month_key, needs_review, confidence)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(text, analysis.amount, analysis.type, analysis.category, analysis.description, analysis.withdrawalPurpose, userId, sourceTimestamp, monthKey, analysis.needsReview, analysis.confidence);
 
     const emoji = analysis.type === 'expense' ? '💸' : analysis.type === 'withdrawal' ? '🏧' : '💵';
     const typeAr = analysis.type === 'expense' ? 'مصروف' : analysis.type === 'withdrawal' ? 'سحب' : 'راتب';
@@ -101,7 +115,7 @@ app.post('/api/chat', (req, res) => {
 
     const responseMessage = `${emoji} ${typeAr}: ${analysis.amount || '?'} ج.م\n📂 ${catAr}\n📝 ${analysis.description}${purposeNote}${reviewNote}`;
 
-    io.emit('new_transaction', { ...analysis, raw_message: text, month_key: monthKey });
+    io.emit('new_transaction', { ...analysis, raw_message: text, month_key: monthKey, user_id: userId });
     res.json({ type: 'transaction', message: responseMessage, data: analysis });
   } catch (err) {
     console.error('Chat error:', err.message, err.stack);
@@ -109,13 +123,14 @@ app.post('/api/chat', (req, res) => {
   }
 });
 
-// Get transactions
+// Get transactions (filtered by user)
 app.get('/api/transactions', (req, res) => {
   try {
     const db = getDb();
+    const userId = req.session.userId;
     const { type, category, month, search, needs_review, page = 1, limit = 50 } = req.query;
-    let query = 'SELECT * FROM transactions WHERE 1=1';
-    const params = [];
+    let query = 'SELECT * FROM transactions WHERE user_id = ?';
+    const params = [userId];
     if (type) { query += ' AND type = ?'; params.push(type); }
     if (category) { query += ' AND category = ?'; params.push(category); }
     if (month) { query += ' AND month_key = ?'; params.push(month); }
@@ -133,19 +148,20 @@ app.get('/api/transactions', (req, res) => {
   }
 });
 
-// Summary
+// Summary (filtered by user)
 app.get('/api/summary', (req, res) => {
   try {
     const db = getDb();
+    const userId = req.session.userId;
     const monthKey = req.query.month || new Date().toISOString().slice(0, 7);
-    const totals = db.prepare(`SELECT type, SUM(amount) as total, COUNT(*) as count FROM transactions WHERE month_key=? AND amount>0 GROUP BY type`).all(monthKey);
-    const breakdown = db.prepare(`SELECT type, category, COUNT(*) as count, SUM(amount) as total FROM transactions WHERE month_key=? AND amount>0 GROUP BY type, category`).all(monthKey);
-    const months = db.prepare('SELECT DISTINCT month_key FROM transactions WHERE month_key IS NOT NULL ORDER BY month_key DESC').all().map(m => m.month_key);
+    const totals = db.prepare(`SELECT type, SUM(amount) as total, COUNT(*) as count FROM transactions WHERE user_id = ? AND month_key=? AND amount>0 GROUP BY type`).all(userId, monthKey);
+    const breakdown = db.prepare(`SELECT type, category, COUNT(*) as count, SUM(amount) as total FROM transactions WHERE user_id = ? AND month_key=? AND amount>0 GROUP BY type, category`).all(userId, monthKey);
+    const months = db.prepare('SELECT DISTINCT month_key FROM transactions WHERE user_id = ? AND month_key IS NOT NULL ORDER BY month_key DESC').all(userId).map(m => m.month_key);
     const expenses = totals.find(t => t.type === 'expense')?.total || 0;
     const withdrawals = totals.find(t => t.type === 'withdrawal')?.total || 0;
     const salary = totals.find(t => t.type === 'salary')?.total || 0;
-    const monthlyBalance = parseFloat(getSetting('monthly_balance') || '0');
-    const balance = (salary + monthlyBalance) - withdrawals;  // المتبقي = الراتب - السحوبات
+    const monthlyBalance = parseFloat(getSetting(`monthly_balance_${userId}`) || getSetting('monthly_balance') || '0');
+    const balance = (salary + monthlyBalance) - withdrawals;
     res.json({ month: monthKey, totals: { salary: salary + monthlyBalance, expenses, withdrawals, balance }, breakdown, months });
   } catch (err) {
     console.error('Summary error:', err.message);
@@ -153,12 +169,13 @@ app.get('/api/summary', (req, res) => {
   }
 });
 
-// Charts
+// Charts (filtered by user)
 app.get('/api/charts/daily', (req, res) => {
   try {
     const db = getDb();
+    const userId = req.session.userId;
     const monthKey = req.query.month || new Date().toISOString().slice(0, 7);
-    res.json(db.prepare(`SELECT DATE(source_timestamp) as date, type, SUM(amount) as total FROM transactions WHERE month_key=? AND amount>0 GROUP BY DATE(source_timestamp), type ORDER BY date`).all(monthKey));
+    res.json(db.prepare(`SELECT DATE(source_timestamp) as date, type, SUM(amount) as total FROM transactions WHERE user_id = ? AND month_key=? AND amount>0 GROUP BY DATE(source_timestamp), type ORDER BY date`).all(userId, monthKey));
   } catch (err) {
     res.json([]);
   }
@@ -167,7 +184,8 @@ app.get('/api/charts/daily', (req, res) => {
 app.get('/api/charts/comparison', (req, res) => {
   try {
     const db = getDb();
-    const data = db.prepare(`SELECT month_key, type, SUM(amount) as total FROM transactions WHERE amount>0 AND month_key IS NOT NULL GROUP BY month_key, type ORDER BY month_key`).all();
+    const userId = req.session.userId;
+    const data = db.prepare(`SELECT month_key, type, SUM(amount) as total FROM transactions WHERE user_id = ? AND amount>0 AND month_key IS NOT NULL GROUP BY month_key, type ORDER BY month_key`).all(userId);
     const monthly = {};
     data.forEach(r => { if (!monthly[r.month_key]) monthly[r.month_key] = { month: r.month_key, expenses: 0, withdrawals: 0 }; monthly[r.month_key][r.type === 'expense' ? 'expenses' : 'withdrawals'] = r.total; });
     res.json(Object.values(monthly));
@@ -181,7 +199,7 @@ app.put('/api/transactions/:id', (req, res) => {
   try {
     const db = getDb();
     const { amount, type, category, description } = req.body;
-    const existing = db.prepare('SELECT * FROM transactions WHERE id=?').get(req.params.id);
+    const existing = db.prepare('SELECT * FROM transactions WHERE id=? AND user_id=?').get(req.params.id, req.session.userId);
     if (!existing) return res.status(404).json({ error: 'Not found' });
     db.prepare('UPDATE transactions SET amount=COALESCE(?,amount), type=COALESCE(?,type), category=COALESCE(?,category), description=COALESCE(?,description), needs_review=CASE WHEN ?=1 THEN 0 ELSE needs_review END WHERE id=?')
       .run(amount, type, category, description, amount ? 1 : 0, req.params.id);
@@ -194,7 +212,7 @@ app.put('/api/transactions/:id', (req, res) => {
 // Delete transaction
 app.delete('/api/transactions/:id', (req, res) => {
   try {
-    getDb().prepare('DELETE FROM transactions WHERE id=?').run(req.params.id);
+    getDb().prepare('DELETE FROM transactions WHERE id=? AND user_id=?').run(req.params.id, req.session.userId);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -203,10 +221,19 @@ app.delete('/api/transactions/:id', (req, res) => {
 
 // Settings
 app.get('/api/settings', (req, res) => {
-  res.json({ monthly_balance: parseFloat(getSetting('monthly_balance') || '0') });
+  const userId = req.session.userId;
+  res.json({ monthly_balance: parseFloat(getSetting(`monthly_balance_${userId}`) || getSetting('monthly_balance') || '0') });
 });
+
 app.put('/api/settings', (req, res) => {
-  Object.entries(req.body).forEach(([k, v]) => setSetting(k, String(v)));
+  const userId = req.session.userId;
+  Object.entries(req.body).forEach(([k, v]) => {
+    if (k === 'monthly_balance') {
+      setSetting(`monthly_balance_${userId}`, String(v));
+    } else {
+      setSetting(k, String(v));
+    }
+  });
   res.json({ success: true });
 });
 

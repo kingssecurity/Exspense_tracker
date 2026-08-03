@@ -301,7 +301,7 @@ export default function App() {
                     <p className="text-xl font-bold mb-2">أهلاً {user?.displayName || user?.username}!</p>
                     <p className="mb-6">ابعتلي مصروفك وأنا أسجله</p>
                     <div className="grid grid-cols-2 gap-2 max-w-xs mx-auto">
-                      {['راتبي 16500', 'سحبت 3000', 'صرفت 150 أكل', 'رصيدي كام؟'].map((ex, i) => (
+                      {['راتبي 5000', 'سحبت 1000', 'صرفت 50 أكل', 'رصيدي كام؟'].map((ex, i) => (
                         <button key={i} onClick={() => setInput(ex)} className="bg-dark-800 px-3 py-2 rounded-xl text-sm hover:bg-dark-700 transition-all">
                           {ex}
                         </button>

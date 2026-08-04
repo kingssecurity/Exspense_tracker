@@ -2,8 +2,10 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import bcrypt from 'bcryptjs';
+import { EventEmitter } from 'events';
 
 const dbPath = process.env.DB_PATH || '/tmp/expense-tracker.db';
+export { dbPath };
 let db;
 
 export function getDb() {
@@ -55,10 +57,16 @@ export function getDb() {
         key TEXT PRIMARY KEY,
         value TEXT
       );
+      CREATE TABLE IF NOT EXISTS sessions (
+        sid TEXT PRIMARY KEY,
+        sess TEXT NOT NULL,
+        expired DATETIME
+      );
       CREATE INDEX IF NOT EXISTS idx_tx_user ON transactions(user_id);
       CREATE INDEX IF NOT EXISTS idx_tx_month ON transactions(month_key);
       CREATE INDEX IF NOT EXISTS idx_tx_type ON transactions(type);
       CREATE INDEX IF NOT EXISTS idx_cat_user ON categories(user_id);
+      CREATE INDEX IF NOT EXISTS idx_sessions_expired ON sessions(expired);
     `);
 
     // Add missing columns safely
@@ -84,6 +92,8 @@ export function getDb() {
       const catCount = db.prepare('SELECT COUNT(*) as c FROM categories WHERE user_id = ?').get(u.id).c;
       if (catCount === 0) seedDefaultCategories(u.id);
     }
+
+    console.log('📂 Database path:', dbPath);
   }
   return db;
 }
@@ -110,7 +120,47 @@ function seedDefaultCategories(userId) {
 
 export function initDb() {
   getDb();
-  console.log('✅ Database ready');
+  console.log('✅ Database ready at:', dbPath);
+}
+
+// ==================== SESSION STORE (SQLite-backed) ====================
+export class SQLiteSessionStore extends EventEmitter {
+  constructor() {
+    super();
+    this.db = getDb();
+    // Clean expired sessions on startup
+    this.db.prepare("DELETE FROM sessions WHERE expired < datetime('now')").run();
+  }
+
+  get(sid, callback) {
+    try {
+      const row = this.db.prepare("SELECT sess FROM sessions WHERE sid = ? AND expired > datetime('now')").get(sid);
+      callback(null, row ? JSON.parse(row.sess) : null);
+    } catch (err) {
+      callback(err);
+    }
+  }
+
+  set(sid, session, callback) {
+    try {
+      const maxAge = session.cookie?.maxAge || 30 * 24 * 60 * 60 * 1000;
+      const expired = new Date(Date.now() + maxAge).toISOString();
+      this.db.prepare("INSERT OR REPLACE INTO sessions (sid, sess, expired) VALUES (?, ?, ?)")
+        .run(sid, JSON.stringify(session), expired);
+      callback(null);
+    } catch (err) {
+      callback(err);
+    }
+  }
+
+  destroy(sid, callback) {
+    try {
+      this.db.prepare("DELETE FROM sessions WHERE sid = ?").run(sid);
+      callback(null);
+    } catch (err) {
+      callback(err);
+    }
+  }
 }
 
 // ==================== USER OPS ====================
@@ -163,9 +213,8 @@ export function updateCategory(id, userId, data) {
 export function deleteCategory(id, userId) {
   const db = getDb();
   const existing = getCategoryById(id, userId);
-  if (!existing || existing.is_default) return false; // Can't delete default "أخرى"
+  if (!existing || existing.is_default) return false;
 
-  // Find the "أخرى" fallback category
   const fallback = db.prepare("SELECT id FROM categories WHERE user_id = ? AND name = 'أخرى'").get(userId);
   if (fallback) {
     db.prepare('UPDATE transactions SET category_id = ?, category = ? WHERE category_id = ? AND user_id = ?').run(fallback.id, 'أخرى', id, userId);

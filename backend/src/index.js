@@ -7,7 +7,7 @@ import fs from 'fs';
 import session from 'express-session';
 import rateLimit from 'express-rate-limit';
 import { fileURLToPath } from 'url';
-import { initDb, getDb, getUser, getUserById, getUserByIdFull, updateUser, getAllUsers, getCategories, getCategoryById, createCategory, updateCategory, deleteCategory, addTransaction, getTransactions, updateTransactionDate, deleteTransaction, getSetting, setSetting, getUserSettings } from './database.js';
+import { initDb, getDb, getUser, getUserById, getUserByIdFull, updateUser, getAllUsers, getCategories, getCategoryById, createCategory, updateCategory, deleteCategory, addTransaction, getTransactions, updateTransactionDate, deleteTransaction, getSetting, setSetting, getUserSettings, SQLiteSessionStore, dbPath } from './database.js';
 import { analyzeMessage, getSmartAnswer } from './analyzer.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -22,9 +22,15 @@ const io = new Server(httpServer, { cors: { origin: '*' } });
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 
+// ==================== SESSION (persisted in SQLite) ====================
+initDb(); // Initialize DB before session store
+
 app.use(session({
+  store: new SQLiteSessionStore(),
   secret: process.env.SESSION_SECRET || 'expense-tracker-secret-change-me-in-prod',
-  resave: false, saveUninitialized: false, name: 'sid',
+  resave: false,
+  saveUninitialized: false,
+  name: 'sid',
   cookie: { httpOnly: true, sameSite: 'lax', secure: isProduction, maxAge: 30*24*60*60*1000 },
 }));
 
@@ -314,7 +320,10 @@ if (frontendPath) { app.use(express.static(frontendPath)); app.get('*', (req, re
 else { app.get('*', (req, res) => res.status(500).json({ error: 'Frontend not built' })); }
 
 io.on('connection', s => s.on('disconnect', () => {}));
-initDb();
-httpServer.listen(PORT, () => console.log(`🚀 http://localhost:${PORT}`));
+httpServer.listen(PORT, () => {
+  console.log(`🚀 http://localhost:${PORT}`);
+  console.log(`📂 Database: ${dbPath}`);
+  console.log(`📂 Sessions: ${dbPath} (same file, sessions table)`);
+});
 process.on('uncaughtException', e => console.error(e.message));
 process.on('unhandledRejection', e => console.error(e?.message));

@@ -93,22 +93,30 @@ export default function App() {
 
     const [txResult, sumResult, dailyResult, settingsResult] = results;
 
+    // Debug: log all results
+    console.log('loadData results:', results.map((r, i) => ({
+      endpoint: ['/transactions', '/summary', '/charts/daily', '/settings'][i],
+      status: r.status,
+      error: r.status === 'rejected' ? r.reason?.message || r.reason : null,
+      data: r.status === 'fulfilled' ? 'ok' : null,
+    })));
+
     if (txResult.status === 'fulfilled') {
       setTransactions(txResult.value.data.transactions || []);
     } else {
-      console.error('Transactions fetch failed:', txResult.reason);
+      console.error('Transactions fetch failed:', txResult.reason?.response?.status, txResult.reason?.message);
     }
 
     if (sumResult.status === 'fulfilled') {
       setSummary(sumResult.value.data);
     } else {
-      console.error('Summary fetch failed:', sumResult.reason);
+      console.error('Summary fetch failed:', sumResult.reason?.response?.status, sumResult.reason?.message);
     }
 
     if (dailyResult.status === 'fulfilled') {
       setDailyData(dailyResult.value.data || []);
     } else {
-      console.error('Daily charts fetch failed:', dailyResult.reason);
+      console.error('Daily charts fetch failed:', dailyResult.reason?.response?.status, dailyResult.reason?.message);
     }
 
     if (settingsResult.status === 'fulfilled') {
@@ -118,13 +126,18 @@ export default function App() {
       setSavingsGoal(s.savings_goal || '');
       setSavingsSaved(s.savings_saved || '');
     } else {
-      console.error('Settings fetch failed:', settingsResult.reason);
+      console.error('Settings fetch failed:', settingsResult.reason?.response?.status, settingsResult.reason?.message);
     }
 
-    // If ALL failed, show error
-    const allFailed = results.every(r => r.status === 'rejected');
-    if (allFailed) {
-      setDataError('فشل تحميل البيانات. تأكي من الاتصال وجربي تاني.');
+    // If ALL failed, show error with details
+    const failedEndpoints = results
+      .filter(r => r.status === 'rejected')
+      .map((r, i) => `${['transactions','summary','charts','settings'][i]}: ${r.reason?.response?.status || r.reason?.message}`);
+
+    if (failedEndpoints.length === results.length) {
+      setDataError(`فشل تحميل كل البيانات:\n${failedEndpoints.join('\n')}`);
+    } else if (failedEndpoints.length > 0) {
+      console.warn('Some endpoints failed:', failedEndpoints);
     }
 
     setDataLoading(false);

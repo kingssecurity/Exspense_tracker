@@ -16,6 +16,7 @@ const __dirname = path.dirname(__filename);
 const PORT = process.env.PORT || 3001;
 const isProduction = process.env.NODE_ENV === 'production';
 const app = express();
+app.set('trust proxy', 1); // Trust Railway's proxy for secure cookies
 const httpServer = createServer(app);
 const io = new Server(httpServer, { cors: { origin: '*' } });
 

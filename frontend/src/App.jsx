@@ -47,6 +47,8 @@ export default function App() {
   const [newDisplayName, setNewDisplayName] = useState('');
   const [oldPassword, setOldPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
+  const [newUsername, setNewUsername] = useState('');
+  const [usernamePassword, setUsernamePassword] = useState('');
   const [isListening, setIsListening] = useState(false);
   const [editingTx, setEditingTx] = useState(null);
   const [editDate, setEditDate] = useState('');
@@ -187,6 +189,20 @@ export default function App() {
     if (!oldPassword || !newPassword) return alert('اكتبي القديم والجديد');
     try { await api.put('/users/password', { oldPassword, newPassword }); alert('تم التغيير!'); setOldPassword(''); setNewPassword(''); }
     catch (err) { console.error(err); alert(err.response?.data?.error || 'حصل خطأ'); }
+  }
+
+  async function handleChangeUsername() {
+    if (!newUsername || !usernamePassword) return alert('اكتبي اسم الدخول الجديد وكلمة المرور');
+    try {
+      const r = await api.put('/users/username', { newUsername, currentPassword: usernamePassword });
+      setUser(prev => ({ ...prev, username: r.data.username }));
+      alert('تم تغيير اسم الدخول! سجلي دخول بالاسم الجديد');
+      setNewUsername('');
+      setUsernamePassword('');
+    } catch (err) {
+      console.error(err);
+      alert(err.response?.data?.error || 'حصل خطأ');
+    }
   }
 
   function startVoiceInput() {
@@ -560,6 +576,16 @@ export default function App() {
                 </div>
               </div>
             )}
+          </div>
+          {/* Change Username */}
+          <div className="card">
+            <h3 className="font-bold text-slate-800 mb-1">✏️ تغيير اسم الدخول</h3>
+            <p className="text-xs text-slate-400 mb-3">اسم المستخدم اللي بتستخدميه لتسجيل الدخول</p>
+            <div className="space-y-3">
+              <input type="text" value={newUsername} onChange={e => setNewUsername(e.target.value.toLowerCase().trim())} className="input" placeholder="اسم الدخول الجديد" />
+              <input type="password" value={usernamePassword} onChange={e => setUsernamePassword(e.target.value)} className="input" placeholder="كلمة المرور الحالية (للتأكيد)" />
+              <button onClick={handleChangeUsername} className="btn-primary w-full text-sm">تغيير اسم الدخول</button>
+            </div>
           </div>
           <div className="card">
             <h3 className="font-bold text-slate-800 mb-3">🔐 تغيير كلمة المرور</h3>

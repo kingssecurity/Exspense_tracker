@@ -107,6 +107,31 @@ app.put('/api/users/password', (req, res) => {
   res.json({ success: true });
 });
 
+// Change login username (requires password confirmation)
+app.put('/api/users/username', (req, res) => {
+  const { newUsername, currentPassword } = req.body;
+  if (!newUsername || !currentPassword) return res.status(400).json({ error: 'مطلوب' });
+
+  const user = getUserByIdFull(req.session.userId);
+  if (!user) return res.status(404).json({ error: 'مستخدم غير موجود' });
+
+  // Verify current password
+  if (!getUser(user.username, currentPassword)) {
+    return res.status(400).json({ error: 'كلمة المرور غلط' });
+  }
+
+  const trimmed = newUsername.trim().toLowerCase();
+  if (trimmed.length < 3) return res.status(400).json({ error: 'اسم المستخدم قصير جدًا' });
+
+  // Check uniqueness (exclude self)
+  const existing = getDb().prepare('SELECT id FROM users WHERE username = ? AND id != ?').get(trimmed, req.session.userId);
+  if (existing) return res.status(409).json({ error: 'اسم المستخدم ده مستخدم بالفعل' });
+
+  getDb().prepare('UPDATE users SET username = ? WHERE id = ?').run(trimmed, req.session.userId);
+  req.session.username = trimmed;
+  res.json({ success: true, username: trimmed });
+});
+
 // ==================== CHAT ====================
 
 app.post('/api/chat', (req, res) => {

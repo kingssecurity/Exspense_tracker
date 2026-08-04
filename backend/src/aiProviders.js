@@ -136,7 +136,7 @@ async function callGemini(message, context) {
 
   for (const part of candidate.content.parts) {
     if (part.functionCall) {
-      return normalizeToolCall(part.functionCall.name, part.functionCall.args || {});
+      return normalizeToolCall(part.functionCall.name, part.functionCall.args || null);
     }
   }
 
@@ -207,16 +207,17 @@ async function callGroq(message, context) {
 
   const toolCall = choice.message?.tool_calls?.[0];
   if (toolCall) {
-    let args;
-    try {
-      args = typeof toolCall.function.arguments === 'string'
-        ? JSON.parse(toolCall.function.arguments)
-        : toolCall.function.arguments;
-    } catch (e) {
-      console.error('Groq: failed to parse tool args:', toolCall.function.arguments);
-      throw new Error('Groq: invalid tool arguments');
+    let args = {};
+    const raw = toolCall.function?.arguments;
+    if (raw && raw !== 'null' && raw !== '{}') {
+      try {
+        args = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      } catch (e) {
+        console.error('Groq: failed to parse tool args:', raw);
+        // Fall through with empty args rather than crashing
+      }
     }
-    return normalizeToolCall(toolCall.function.name, args);
+    return normalizeToolCall(toolCall.function?.name, args);
   }
 
   if (choice.message?.content) {
@@ -270,28 +271,30 @@ function callFallbackParser(message, context) {
 
 // ==================== HELPERS ====================
 function normalizeToolCall(name, args) {
-  const date = args.date_day ? new Date(new Date().getFullYear(), new Date().getMonth(), args.date_day) : null;
+  // Guard: args can be null/undefined when a tool has no params (e.g. get_summary())
+  const a = args || {};
+  const date = a.date_day ? new Date(new Date().getFullYear(), new Date().getMonth(), a.date_day) : null;
 
   switch (name) {
     case 'log_expense':
       return {
         action: 'log_expense',
-        amount: args.amount,
-        category: args.category || 'other',
-        description: args.description || '',
+        amount: a.amount,
+        category: a.category || 'other',
+        description: a.description || '',
         date
       };
     case 'log_withdrawal':
       return {
         action: 'log_withdrawal',
-        amount: args.amount,
-        purpose: args.purpose || '',
+        amount: a.amount,
+        purpose: a.purpose || '',
         date
       };
     case 'log_salary':
       return {
         action: 'log_salary',
-        amount: args.amount,
+        amount: a.amount,
         date
       };
     case 'get_summary':
@@ -321,7 +324,7 @@ export async function getAIResponse(message, context) {
       return result;
     } catch (err) {
       if (err.code !== 'NO_KEY') {
-        console.error(`⚠️ Gemini failed (${err.code || 'unknown'}): ${err.message}`);
+        console.error(`⚠️ Gemini failed (${err.code || 'unknown'}):`, err.stack || err.message);
       }
     }
   }
@@ -334,7 +337,7 @@ export async function getAIResponse(message, context) {
       return result;
     } catch (err) {
       if (err.code !== 'NO_KEY') {
-        console.error(`⚠️ Groq failed (${err.code || 'unknown'}): ${err.message}`);
+        console.error(`⚠️ Groq failed (${err.code || 'unknown'}):`, err.stack || err.message);
       }
     }
   }

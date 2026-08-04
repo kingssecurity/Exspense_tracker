@@ -9,7 +9,8 @@ import rateLimit from 'express-rate-limit';
 import { fileURLToPath } from 'url';
 import { initDb, getDb, getUser, getUserById, getUserByIdFull, updateUser, getAllUsers, getCategories, getCategoryById, createCategory, updateCategory, deleteCategory, addTransaction, getTransactions, updateTransactionDate, deleteTransaction, getSetting, setSetting, getUserSettings, dbPath } from './database.js';
 import SqliteSessionStore from './sessions.js';
-import { analyzeMessage, getSmartAnswer } from './analyzer.js';
+import { getAIResponse } from './aiProviders.js';
+import { getSmartAnswer } from './analyzer.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -122,110 +123,61 @@ app.post('/api/chat', async (req, res) => {
     const text = message.trim();
     const userId = req.session.userId;
     const categories = getCategories(userId);
+    const transactions = getTransactions(userId, { limit: 500 });
+    const settings = getUserSettings(userId);
+    const user = getUserById(userId);
 
-    const questionWords = ['كام', 'رصيد', 'متبقي', 'أكتر', 'تفصيل', 'اليوم', 'تحليل', 'نصيحة', 'ميزانية', 'هدف'];
-    const isQuestion = questionWords.some(w => text.includes(w)) || text.includes('?') || text.includes('؟');
-    if (isQuestion) {
-      const transactions = getTransactions(userId, { limit: 500 });
-      const settings = getUserSettings(userId);
-      const user = getUserById(userId);
-      return res.json({ type: 'answer', message: getSmartAnswer(text, transactions, settings, user, categories) });
-    }
+    const ai = await getAIResponse(text, { categories, settings, user });
 
-    const shorthand = tryCategoryShorthand(text, categories);
-    if (shorthand) {
-      if (shorthand.ambiguous) {
-        return res.json({ type: 'disambiguate', message: shorthand.message, options: shorthand.options });
+    const monthKey = (ai.date || new Date()).toISOString().slice(0, 7);
+    const sourceTimestamp = (ai.date || new Date()).toISOString();
+
+    switch (ai.action) {
+      case 'log_expense': {
+        const cat = categories.find(c => c.name === ai.category) || categories.find(c => c.name === 'أخرى');
+        addTransaction({
+          rawMessage: text, amount: ai.amount, type: 'expense',
+          category: cat?.name || 'أخرى', categoryId: cat?.id,
+          description: ai.description || cat?.name || '', withdrawalPurpose: null,
+          userId, sourceTimestamp, monthKey, needsReview: 0, confidence: 0.9
+        });
+        io.emit('new_transaction', { amount: ai.amount, type: 'expense', category: cat?.name, raw_message: text, month_key: monthKey, user_id: userId });
+        return res.json({ type: 'transaction', message: `✅ اتسجل ${ai.amount} ج.م تحت ${cat?.icon || ''} ${cat?.name || 'أخرى'}\n📝 ${ai.description || ''}` });
       }
-      if (shorthand.noMatch) {
-        return res.json({ type: 'no_match', message: shorthand.message });
+      case 'log_withdrawal': {
+        addTransaction({
+          rawMessage: text, amount: ai.amount, type: 'withdrawal',
+          category: 'أخرى', categoryId: categories.find(c => c.name === 'أخرى')?.id,
+          description: ai.purpose || 'سحب من الراتب', withdrawalPurpose: ai.purpose || null,
+          userId, sourceTimestamp, monthKey, needsReview: 0, confidence: 0.9
+        });
+        io.emit('new_transaction', { amount: ai.amount, type: 'withdrawal', category: 'أخرى', raw_message: text, month_key: monthKey, user_id: userId });
+        const purpose = ai.purpose ? `\n🎯 عشان: ${ai.purpose}` : '';
+        return res.json({ type: 'transaction', message: `🏧 سحبت ${ai.amount} ج.م${purpose}` });
       }
-      const monthKey = new Date().toISOString().slice(0, 7);
-      addTransaction({
-        rawMessage: text, amount: shorthand.amount, type: 'expense',
-        category: shorthand.categoryName, categoryId: shorthand.categoryId,
-        description: shorthand.description, withdrawalPurpose: null,
-        userId, sourceTimestamp: new Date().toISOString(), monthKey,
-        needsReview: 0, confidence: 0.95
-      });
-      const cat = categories.find(c => c.id === shorthand.categoryId);
-      io.emit('new_transaction', { amount: shorthand.amount, type: 'expense', category: shorthand.categoryName, raw_message: text, month_key: monthKey, user_id: userId });
-      return res.json({ type: 'transaction', message: `✅ اتسجل ${shorthand.amount} ج.م تحت ${cat?.icon || ''} ${shorthand.categoryName}` });
+      case 'log_salary': {
+        addTransaction({
+          rawMessage: text, amount: ai.amount, type: 'salary',
+          category: 'أخرى', categoryId: categories.find(c => c.name === 'أخرى')?.id,
+          description: 'راتب', withdrawalPurpose: null,
+          userId, sourceTimestamp, monthKey, needsReview: 0, confidence: 0.95
+        });
+        io.emit('new_transaction', { amount: ai.amount, type: 'salary', raw_message: text, month_key: monthKey, user_id: userId });
+        return res.json({ type: 'transaction', message: `💵 راتب ${ai.amount} ج.م اتسجل` });
+      }
+      case 'question': {
+        const answer = getSmartAnswer(text, transactions, settings, user, categories);
+        return res.json({ type: 'answer', message: answer });
+      }
+      default:
+        return res.json({ type: 'answer', message: ai.reply || '🤖 مش فاهم. جرب "صرفت 50 أكل" أو "رصيدي كام؟"' });
     }
-
-    const analysis = analyzeMessage(text);
-    const transactionDate = analysis.transactionDate || new Date();
-    const monthKey = transactionDate.toISOString().slice(0, 7);
-
-    let categoryId = null;
-    let categoryName = 'أخرى';
-    if (analysis.category) {
-      const matched = categories.find(c => c.name === analysis.category || (JSON.parse(c.keywords || '[]').some(k => text.includes(k))));
-      if (matched) { categoryId = matched.id; categoryName = matched.name; }
-    }
-
-    addTransaction({
-      rawMessage: text, amount: analysis.amount, type: analysis.type,
-      category: categoryName, categoryId, description: analysis.description,
-      withdrawalPurpose: analysis.withdrawalPurpose, userId,
-      sourceTimestamp: transactionDate.toISOString(), monthKey,
-      needsReview: analysis.needsReview ? 1 : 0, confidence: analysis.confidence
-    });
-
-    const emoji = analysis.type === 'expense' ? '💸' : analysis.type === 'withdrawal' ? '🏧' : '💵';
-    const typeAr = analysis.type === 'expense' ? 'مصروف' : analysis.type === 'withdrawal' ? 'سحب' : 'راتب';
-    const cat = categories.find(c => c.id === categoryId);
-    const purpose = analysis.withdrawalPurpose ? `\n🎯 عشان: ${analysis.withdrawalPurpose}` : '';
-    const review = analysis.needsReview ? '\n⚠️ محتاج مراجعة' : '';
-
-    io.emit('new_transaction', { ...analysis, raw_message: text, month_key: monthKey, user_id: userId });
-    res.json({ type: 'transaction', message: `${emoji} ${typeAr}: ${analysis.amount || '?'} ج.م\n${cat?.icon || ''} ${categoryName}\n📝 ${analysis.description}${purpose}${review}` });
   } catch (err) {
     console.error('Chat error:', err);
     res.status(500).json({ error: 'Error' });
   }
 });
 
-function tryCategoryShorthand(text, categories) {
-  const arabicNums = {'٠':'0','١':'1','٢':'2','٣':'3','٤':'4','٥':'5','٦':'6','٧':'7','٨':'8','٩':'9'};
-  let normalized = text;
-  for (const [ar, en] of Object.entries(arabicNums)) normalized = normalized.replaceAll(ar, en);
-  const amountMatch = normalized.match(/[\d,]+\.?\d*/);
-  if (!amountMatch) return null;
-  const amount = parseFloat(amountMatch[0].replace(/,/g, ''));
-  if (!amount || amount <= 0) return null;
-
-  const label = text.replace(/[\d,]+\.?\d*/g, '').replace(/جنيه|ج\.م|مصروف|صرفت|دفعت/g, '').trim();
-  if (!label) return null;
-
-  const matches = [];
-  for (const cat of categories) {
-    const keywords = JSON.parse(cat.keywords || '[]');
-    const allTerms = [cat.name, ...keywords];
-    for (const term of allTerms) {
-      if (label.includes(term) || term.includes(label)) {
-        matches.push(cat);
-        break;
-      }
-    }
-  }
-
-  if (matches.length === 0) return null;
-  if (matches.length > 1) {
-    return {
-      ambiguous: true,
-      message: `لقى أكتر من فئة: ${matches.map(m => `${m.icon} ${m.name}`).join('، ')}\nاختاري واحدة`,
-      options: matches.map(m => ({ id: m.id, name: m.name, icon: m.icon }))
-    };
-  }
-
-  return {
-    amount,
-    categoryId: matches[0].id,
-    categoryName: matches[0].name,
-    description: label.replace(matches[0].name, '').trim() || matches[0].name
-  };
-}
 
 // ==================== TRANSACTIONS ====================
 app.post('/api/transactions', (req, res) => {

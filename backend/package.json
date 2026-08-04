@@ -17,7 +17,6 @@
     "socket.io": "^4.7.2",
     "bcryptjs": "^2.4.3",
     "express-rate-limit": "^7.1.5",
-    "express-session": "^1.17.3",
-    "better-sqlite3-session-store": "^0.1.0"
+    "express-session": "^1.17.3"
   }
 }

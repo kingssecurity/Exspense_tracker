@@ -1,31 +1,32 @@
 // Multi-provider AI fallback: Gemini → Groq → Keyword parser
-// Each provider returns the same shape so the caller doesn't care which one answered.
+// Checklist applied: ES modules, no __dirname, error logging, no silent catches
 
 import { analyzeMessage as fallbackParser } from './analyzer.js';
 
 // ==================== SHARED TOOL DEFINITIONS ====================
+// Simplified: removed ask_question (fragile enum) — model uses get_summary or text reply for questions
 const TOOLS = [
   {
     name: 'log_expense',
-    description: 'تسجيل مصروف (صرفت، دفعت، اشتريت)',
+    description: 'تسجيل مصروف. استخدمها لما المستخدم يذكر مبلغ + سبب الصرف (أكل، مواصلات، فاتورة، إلخ).',
     parameters: {
       type: 'object',
       properties: {
-        amount: { type: 'number', description: 'المبلغ بالجنيه' },
-        category: { type: 'string', enum: ['food','transport','health','bills','shopping','work','home','entertainment','other'], description: 'فئة المصروف' },
-        description: { type: 'string', description: 'وصف مختصر' },
-        date_day: { type: 'number', description: 'يوم الشهر (1-31) لو ذُكر' }
+        amount: { type: 'number', description: 'المبلغ بالجنيه المصري' },
+        category: { type: 'string', description: 'فئة المصروف مثل: food, transport, health, bills, shopping, work, home, entertainment, other' },
+        description: { type: 'string', description: 'وصف مختصر للمصروف بالعربي' },
+        date_day: { type: 'number', description: 'يوم الشهر (1-31) لو المستخدم ذكر تاريخ محدد' }
       },
       required: ['amount', 'category', 'description']
     }
   },
   {
     name: 'log_withdrawal',
-    description: 'تسجيل سحب فلوس من الراتب (سحبت)',
+    description: 'تسجيل سحب فلوس من الراتب. استخدمها لما المستخدم يقول "سحبت" أو "سلف".',
     parameters: {
       type: 'object',
       properties: {
-        amount: { type: 'number', description: 'المبلغ بالجنيه' },
+        amount: { type: 'number', description: 'المبلغ بالجنيه المصري' },
         purpose: { type: 'string', description: 'سبب السحب لو ذُكر' },
         date_day: { type: 'number', description: 'يوم الشهر لو ذُكر' }
       },
@@ -34,49 +35,59 @@ const TOOLS = [
   },
   {
     name: 'log_salary',
-    description: 'تسجيل راتب أو دخل',
+    description: 'تسجيل راتب أو دخل. استخدمها لما المستخدم يقول "راتبي" أو "مرتب" أو "نزل المرتب".',
     parameters: {
       type: 'object',
       properties: {
-        amount: { type: 'number', description: 'المبلغ بالجنيه' }
+        amount: { type: 'number', description: 'المبلغ بالجنيه المصري' }
       },
       required: ['amount']
     }
   },
   {
     name: 'get_summary',
-    description: 'عرض ملخص المصاريف والرصيد',
+    description: 'عرض ملخص المصاريف والرصيد. استخدمها لأي سؤال عن الرصيد أو المصاريف أو التفصيل أو النصائح.',
     parameters: { type: 'object', properties: {} }
-  },
-  {
-    name: 'ask_question',
-    description: 'الرد على سؤال عن المصاريف أو الرصيد',
-    parameters: {
-      type: 'object',
-      properties: {
-        question_type: { type: 'string', enum: ['balance','expenses','salary','withdrawals','breakdown','daily','tips','comparison'] }
-      },
-      required: ['question_type']
-    }
   }
 ];
 
 const SYSTEM_PROMPT = `أنت مساعد ذكي لتتبع المصاريف باللهجة المصرية.
 
- Rules:
- - لو الرسالة فيها مبلغ رقمي + كلمة صرف/دفع/شراء → log_expense
- - لو فيها سحب/سلف → log_withdrawal
- - لو فيها راتب/مرتب/دخل → log_salary
- - لو فيها سؤال (كام، رصيد، متبقي، تفصيل، نصيحة) → ask_question
- - لو مفيش مبلغ واضح ومفيش سؤال → ask_question مع question_type: "general"
- - رد بالـ tool call المناسب. متشرحش.
+Rules:
+- لو الرسالة فيها مبلغ رقمي + كلمة صرف/دفع/شراء → log_expense
+- لو فيها سحب/سلف → log_withdrawal  
+- لو فيها راتب/مرتب/دخل → log_salary
+- لو فيها سؤال عن أي حاجة (رصيد، متبقي، كام، تفصيل، نصيحة، ميزانية) → get_summary
+- رد بالـ tool call المناسب. متشرحش.
 
- Categories: food, transport, health, bills, shopping, work, home, entertainment, other`;
+Categories: food, transport, health, bills, shopping, work, home, entertainment, other
+
+أمثلة:
+- "صرفت 50 جنيه أكل" → log_expense(amount=50, category="food", description="أكل")
+- "سحبت 2000 من الراتب" → log_withdrawal(amount=2000)
+- "راتبي 16500" → log_salary(amount=16500)
+- "رصيدي كام؟" → get_summary()
+- "معايا كام؟" → get_summary()
+- "مصروفاتي الشهر ده" → get_summary()
+- "مواصلات 30" → log_expense(amount=30, category="transport", description="مواصلات")`;
+
+// ==================== RATE LIMIT TRACKING ====================
+const rateLimitCooldown = { gemini: 0, groq: 0 };
+
+function isCoolingDown(provider) {
+  return Date.now() < rateLimitCooldown[provider];
+}
+
+function setCooldown(provider, seconds) {
+  rateLimitCooldown[provider] = Date.now() + (seconds * 1000);
+  console.log(`⏳ ${provider} cooling down for ${seconds}s`);
+}
 
 // ==================== GEMINI ====================
 async function callGemini(message, context) {
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error('No GEMINI_API_KEY');
+  if (!apiKey) throw Object.assign(new Error('No GEMINI_API_KEY'), { code: 'NO_KEY' });
+  if (isCoolingDown('gemini')) throw Object.assign(new Error('Gemini cooling down'), { code: 429 });
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
 
@@ -97,56 +108,55 @@ async function callGemini(message, context) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(10000),
+    signal: AbortSignal.timeout(15000),
   });
 
+  // Log rate limit details
   if (res.status === 429) {
-    const err = new Error('Gemini rate limited (429)');
-    err.provider = 'gemini';
-    err.code = 429;
-    throw err;
+    const retryAfter = res.headers.get('retry-after');
+    const body = await res.text().catch(() => '');
+    console.error(`⚠️ Gemini 429: retry-after=${retryAfter || 'none'}, body=${body.slice(0, 200)}`);
+    // Back off: wait 60s before trying Gemini again
+    setCooldown('gemini', 60);
+    throw Object.assign(new Error('Gemini rate limited'), { code: 429 });
   }
 
   if (!res.ok) {
-    const text = await res.text();
-    const err = new Error(`Gemini API error ${res.status}: ${text.slice(0, 200)}`);
-    err.provider = 'gemini';
-    err.code = res.status;
-    throw err;
+    const text = await res.text().catch(() => '');
+    console.error(`⚠️ Gemini ${res.status}: ${text.slice(0, 300)}`);
+    throw Object.assign(new Error(`Gemini ${res.status}`), { code: res.status });
   }
 
   const data = await res.json();
   const candidate = data.candidates?.[0];
 
   if (!candidate?.content?.parts) {
-    throw new Error('Gemini returned no content');
+    throw new Error('Gemini: no content in response');
   }
 
-  // Check for function call
   for (const part of candidate.content.parts) {
     if (part.functionCall) {
       return normalizeToolCall(part.functionCall.name, part.functionCall.args || {});
     }
   }
 
-  // Check for text response
   for (const part of candidate.content.parts) {
     if (part.text) {
       return { action: 'answer', reply: part.text };
     }
   }
 
-  throw new Error('Gemini returned unexpected format');
+  throw new Error('Gemini: unexpected response format');
 }
 
 // ==================== GROQ ====================
 async function callGroq(message, context) {
   const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) throw new Error('No GROQ_API_KEY');
+  if (!apiKey) throw Object.assign(new Error('No GROQ_API_KEY'), { code: 'NO_KEY' });
+  if (isCoolingDown('groq')) throw Object.assign(new Error('Groq cooling down'), { code: 429 });
 
   const url = 'https://api.groq.com/openai/v1/chat/completions';
 
-  // Convert tools to OpenAI format
   const tools = TOOLS.map(t => ({
     type: 'function',
     function: {
@@ -175,51 +185,45 @@ async function callGroq(message, context) {
       'Authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(10000),
+    signal: AbortSignal.timeout(15000),
   });
 
   if (res.status === 429) {
-    const err = new Error('Groq rate limited (429)');
-    err.provider = 'groq';
-    err.code = 429;
-    throw err;
-  }
-
-  if (!res.status === 401) {
-    const err = new Error('Groq auth failed (401)');
-    err.provider = 'groq';
-    err.code = 401;
-    throw err;
+    const retryAfter = res.headers.get('retry-after');
+    console.error(`⚠️ Groq 429: retry-after=${retryAfter || 'none'}`);
+    setCooldown('groq', 30);
+    throw Object.assign(new Error('Groq rate limited'), { code: 429 });
   }
 
   if (!res.ok) {
-    const text = await res.text();
-    const err = new Error(`Groq API error ${res.status}: ${text.slice(0, 200)}`);
-    err.provider = 'groq';
-    err.code = res.status;
-    throw err;
+    const text = await res.text().catch(() => '');
+    console.error(`⚠️ Groq ${res.status}: ${text.slice(0, 500)}`);
+    throw Object.assign(new Error(`Groq ${res.status}: ${text.slice(0, 100)}`), { code: res.status });
   }
 
   const data = await res.json();
   const choice = data.choices?.[0];
+  if (!choice) throw new Error('Groq: no choices');
 
-  if (!choice) throw new Error('Groq returned no choices');
-
-  // Check for tool call
   const toolCall = choice.message?.tool_calls?.[0];
   if (toolCall) {
-    const args = typeof toolCall.function.arguments === 'string'
-      ? JSON.parse(toolCall.function.arguments)
-      : toolCall.function.arguments;
+    let args;
+    try {
+      args = typeof toolCall.function.arguments === 'string'
+        ? JSON.parse(toolCall.function.arguments)
+        : toolCall.function.arguments;
+    } catch (e) {
+      console.error('Groq: failed to parse tool args:', toolCall.function.arguments);
+      throw new Error('Groq: invalid tool arguments');
+    }
     return normalizeToolCall(toolCall.function.name, args);
   }
 
-  // Check for text response
   if (choice.message?.content) {
     return { action: 'answer', reply: choice.message.content };
   }
 
-  throw new Error('Groq returned unexpected format');
+  throw new Error('Groq: unexpected response format');
 }
 
 // ==================== FALLBACK KEYWORD PARSER ====================
@@ -245,28 +249,14 @@ function callFallbackParser(message, context) {
     });
   }
 
-  // Check for questions
+  // Questions → get_summary
   const q = message;
-  if (q.includes('رصيد') || q.includes('متبقي') || q.includes('باقي')) {
-    return normalizeToolCall('ask_question', { question_type: 'balance' });
-  }
-  if (q.includes('مصروف') && (q.includes('كام') || q.includes('إجمالي'))) {
-    return normalizeToolCall('ask_question', { question_type: 'expenses' });
-  }
-  if (q.includes('تفصيل') || q.includes('توزيع')) {
-    return normalizeToolCall('ask_question', { question_type: 'breakdown' });
-  }
-  if (q.includes('راتب') || q.includes('مرتب')) {
-    return normalizeToolCall('ask_question', { question_type: 'salary' });
-  }
-  if (q.includes('اليوم') || q.includes('نهارده')) {
-    return normalizeToolCall('ask_question', { question_type: 'daily' });
-  }
-  if (q.includes('تحليل') || q.includes('نصيحة') || q.includes('نصائح')) {
-    return normalizeToolCall('ask_question', { question_type: 'tips' });
+  const questionWords = ['كام', 'رصيد', 'متبقي', 'باقي', 'تفصيل', 'توزيع', 'راتب', 'مرتب', 'اليوم', 'نهارده', 'تحليل', 'نصيحة', 'نصائح', 'ميزانية', 'فلوس', 'معايا'];
+  if (questionWords.some(w => q.includes(w)) || q.includes('?') || q.includes('؟')) {
+    return normalizeToolCall('get_summary', {});
   }
 
-  // Default: try to log as expense if there's a number
+  // Has a number but no clear intent → try expense with "other"
   if (analysis.amount) {
     return normalizeToolCall('log_expense', {
       amount: analysis.amount,
@@ -305,11 +295,7 @@ function normalizeToolCall(name, args) {
         date
       };
     case 'get_summary':
-    case 'ask_question':
-      return {
-        action: 'question',
-        question_type: args.question_type || 'balance'
-      };
+      return { action: 'question', question_type: 'summary' };
     default:
       return { action: 'answer', reply: 'مش فاهم الطلب' };
   }
@@ -328,24 +314,28 @@ function mapLegacyCategory(cat) {
 // ==================== MAIN ENTRY POINT ====================
 export async function getAIResponse(message, context) {
   // 1. Try Gemini
-  if (process.env.GEMINI_API_KEY) {
+  if (process.env.GEMINI_API_KEY && !isCoolingDown('gemini')) {
     try {
       const result = await callGemini(message, context);
       console.log('✅ Gemini responded');
       return result;
     } catch (err) {
-      console.error(`⚠️ Gemini failed (${err.code || 'unknown'}):`, err.message);
+      if (err.code !== 'NO_KEY') {
+        console.error(`⚠️ Gemini failed (${err.code || 'unknown'}): ${err.message}`);
+      }
     }
   }
 
   // 2. Try Groq
-  if (process.env.GROQ_API_KEY) {
+  if (process.env.GROQ_API_KEY && !isCoolingDown('groq')) {
     try {
       const result = await callGroq(message, context);
       console.log('✅ Groq responded');
       return result;
     } catch (err) {
-      console.error(`⚠️ Groq failed (${err.code || 'unknown'}):`, err.message);
+      if (err.code !== 'NO_KEY') {
+        console.error(`⚠️ Groq failed (${err.code || 'unknown'}): ${err.message}`);
+      }
     }
   }
 

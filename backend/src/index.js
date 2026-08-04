@@ -7,7 +7,8 @@ import fs from 'fs';
 import session from 'express-session';
 import rateLimit from 'express-rate-limit';
 import { fileURLToPath } from 'url';
-import { initDb, getDb, getUser, getUserById, getUserByIdFull, updateUser, getAllUsers, getCategories, getCategoryById, createCategory, updateCategory, deleteCategory, addTransaction, getTransactions, updateTransactionDate, deleteTransaction, getSetting, setSetting, getUserSettings, SQLiteSessionStore, dbPath } from './database.js';
+import { initDb, getDb, getUser, getUserById, getUserByIdFull, updateUser, getAllUsers, getCategories, getCategoryById, createCategory, updateCategory, deleteCategory, addTransaction, getTransactions, updateTransactionDate, deleteTransaction, getSetting, setSetting, getUserSettings, dbPath } from './database.js';
+import SqliteSessionStore from './sessions.js';
 import { analyzeMessage, getSmartAnswer } from './analyzer.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -15,26 +16,32 @@ const __dirname = path.dirname(__filename);
 const PORT = process.env.PORT || 3001;
 const isProduction = process.env.NODE_ENV === 'production';
 const app = express();
-app.set('trust proxy', 1);
+app.set('trust proxy', 1); // Must be before session middleware
 const httpServer = createServer(app);
 const io = new Server(httpServer, { cors: { origin: '*' } });
 
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 
-// ==================== SESSION (persisted in SQLite) ====================
-initDb(); // Initialize DB before session store
+// ==================== INIT DB FIRST ====================
+initDb();
 
+// ==================== SESSION (SQLite-backed, persists across restarts) ====================
 app.use(session({
-  store: new SQLiteSessionStore(),
+  store: new SqliteSessionStore(),
   secret: process.env.SESSION_SECRET || 'expense-tracker-secret-change-me-in-prod',
   resave: false,
   saveUninitialized: false,
   name: 'sid',
-  cookie: { httpOnly: true, sameSite: 'lax', secure: isProduction, maxAge: 30*24*60*60*1000 },
+  cookie: {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: isProduction,
+    maxAge: 30 * 24 * 60 * 60 * 1000,
+  },
 }));
 
-const loginLimiter = rateLimit({ windowMs: 15*60*1000, max: 10, message: { error: 'محاولات كتير' } });
+const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10, message: { error: 'محاولات كتير' } });
 
 // ==================== AUTH ====================
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
@@ -90,20 +97,17 @@ app.put('/api/users/username', (req, res) => {
 
 // ==================== CATEGORIES ====================
 app.get('/api/categories', (req, res) => { res.json(getCategories(req.session.userId)); });
-
 app.post('/api/categories', (req, res) => {
   const { name, icon, color, keywords } = req.body;
   if (!name) return res.status(400).json({ error: 'اسم الفئة مطلوب' });
   const id = createCategory(req.session.userId, { name, icon, color, keywords });
   res.json({ success: true, id });
 });
-
 app.put('/api/categories/:id', (req, res) => {
   if (!updateCategory(parseInt(req.params.id), req.session.userId, req.body))
     return res.status(404).json({ error: 'فئة غير موجودة' });
   res.json({ success: true });
 });
-
 app.delete('/api/categories/:id', (req, res) => {
   if (!deleteCategory(parseInt(req.params.id), req.session.userId))
     return res.status(400).json({ error: 'مش هقدر أمسح الفئة دي' });
@@ -119,7 +123,6 @@ app.post('/api/chat', async (req, res) => {
     const userId = req.session.userId;
     const categories = getCategories(userId);
 
-    // Check if it's a question
     const questionWords = ['كام', 'رصيد', 'متبقي', 'أكتر', 'تفصيل', 'اليوم', 'تحليل', 'نصيحة', 'ميزانية', 'هدف'];
     const isQuestion = questionWords.some(w => text.includes(w)) || text.includes('?') || text.includes('؟');
     if (isQuestion) {
@@ -129,16 +132,14 @@ app.post('/api/chat', async (req, res) => {
       return res.json({ type: 'answer', message: getSmartAnswer(text, transactions, settings, user, categories) });
     }
 
-    // Try "category + amount" shorthand
     const shorthand = tryCategoryShorthand(text, categories);
     if (shorthand) {
       if (shorthand.ambiguous) {
         return res.json({ type: 'disambiguate', message: shorthand.message, options: shorthand.options });
       }
       if (shorthand.noMatch) {
-        return res.json({ type: 'no_match', message: shorthand.message, suggestedCategory: shorthand.suggested });
+        return res.json({ type: 'no_match', message: shorthand.message });
       }
-      // Direct match — log it
       const monthKey = new Date().toISOString().slice(0, 7);
       addTransaction({
         rawMessage: text, amount: shorthand.amount, type: 'expense',
@@ -152,12 +153,10 @@ app.post('/api/chat', async (req, res) => {
       return res.json({ type: 'transaction', message: `✅ اتسجل ${shorthand.amount} ج.م تحت ${cat?.icon || ''} ${shorthand.categoryName}` });
     }
 
-    // Fallback to NLP analysis
     const analysis = analyzeMessage(text);
     const transactionDate = analysis.transactionDate || new Date();
     const monthKey = transactionDate.toISOString().slice(0, 7);
 
-    // Try to match category from analysis
     let categoryId = null;
     let categoryName = 'أخرى';
     if (analysis.category) {
@@ -187,9 +186,7 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
-// Category shorthand matcher
 function tryCategoryShorthand(text, categories) {
-  // Extract number
   const arabicNums = {'٠':'0','١':'1','٢':'2','٣':'3','٤':'4','٥':'5','٦':'6','٧':'7','٨':'8','٩':'9'};
   let normalized = text;
   for (const [ar, en] of Object.entries(arabicNums)) normalized = normalized.replaceAll(ar, en);
@@ -198,11 +195,9 @@ function tryCategoryShorthand(text, categories) {
   const amount = parseFloat(amountMatch[0].replace(/,/g, ''));
   if (!amount || amount <= 0) return null;
 
-  // Remove the number and common words to get the "label"
   const label = text.replace(/[\d,]+\.?\d*/g, '').replace(/جنيه|ج\.م|مصروف|صرفت|دفعت/g, '').trim();
   if (!label) return null;
 
-  // Match against categories
   const matches = [];
   for (const cat of categories) {
     const keywords = JSON.parse(cat.keywords || '[]');
@@ -232,7 +227,7 @@ function tryCategoryShorthand(text, categories) {
   };
 }
 
-// ==================== TRANSACTIONS (explicit creation) ====================
+// ==================== TRANSACTIONS ====================
 app.post('/api/transactions', (req, res) => {
   const { amount, category_id, description, type = 'expense' } = req.body;
   if (!amount) return res.status(400).json({ error: 'المبلغ مطلوب' });
@@ -322,8 +317,7 @@ else { app.get('*', (req, res) => res.status(500).json({ error: 'Frontend not bu
 io.on('connection', s => s.on('disconnect', () => {}));
 httpServer.listen(PORT, () => {
   console.log(`🚀 http://localhost:${PORT}`);
-  console.log(`📂 Database: ${dbPath}`);
-  console.log(`📂 Sessions: ${dbPath} (same file, sessions table)`);
+  console.log(`📂 DB: ${dbPath}`);
 });
 process.on('uncaughtException', e => console.error(e.message));
 process.on('unhandledRejection', e => console.error(e?.message));

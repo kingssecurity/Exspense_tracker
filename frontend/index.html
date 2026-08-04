@@ -3,29 +3,26 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no" />
-  <meta name="theme-color" content="#3b82f6" />
-  <meta name="description" content="تتبع مصاريفك بسهولة" />
+  <meta name="theme-color" content="#5b9c3c" />
+  <meta name="description" content="تطبيق تتبع المصاريف" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="apple-mobile-web-app-title" content="مصروفاتي" />
-  <link rel="manifest" href="/manifest.json" />
-  <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+  <meta name="apple-mobile-web-app-title" content="Moza">
+  <meta name="application-name" content="Moza">
+  <title>Moza</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" sizes="32x32" href="/icon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/icon-16x16.png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/manifest.json">
   <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap" rel="stylesheet" />
-  <title>مصروفاتي</title>
 </head>
-<body class="bg-dark-950 text-white">
+<body class="bg-slate-50 text-slate-900">
   <div id="root"></div>
   <script>
-    // Register service worker
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/sw.js')
-          .then(registration => {
-            console.log('SW registered:', registration.scope);
-          })
-          .catch(error => {
-            console.log('SW registration failed:', error);
-          });
+        navigator.serviceWorker.register('/sw.js').catch(() => {});
       });
     }
   </script>

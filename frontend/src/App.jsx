@@ -176,7 +176,7 @@ export default function App() {
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
           <div className="w-20 h-20 mx-auto mb-4 bg-white/20 backdrop-blur rounded-3xl flex items-center justify-center shadow-2xl"><span className="text-4xl">💰</span></div>
-          <h1 className="text-3xl font-bold text-white">مصروفاتي</h1>
+          <h1 className="text-3xl font-bold text-white">Moza</h1>
           <p className="text-white/70 mt-1">تتبع مصاريفك بسهولة</p>
         </div>
         <form onSubmit={handleLogin} className="bg-white rounded-3xl p-6 shadow-2xl space-y-4">
@@ -210,7 +210,7 @@ export default function App() {
       <aside className={`fixed inset-y-0 left-0 z-50 w-72 bg-white shadow-2xl transform transition-transform duration-300 ${sidebarOpen?'translate-x-0':'-translate-x-full'}`}>
         <div className="p-6 h-full flex flex-col">
           <div className="flex items-center justify-between mb-8">
-            <div className="flex items-center gap-3"><div className="w-12 h-12 rounded-2xl flex items-center justify-center" style={{background:'linear-gradient(135deg,#667eea,#764ba2)'}}><span className="text-2xl">💰</span></div><div><p className="font-bold text-slate-800">مصروفاتي</p><p className="text-xs text-slate-400">@{user?.username}</p></div></div>
+            <div className="flex items-center gap-3"><div className="w-12 h-12 rounded-2xl flex items-center justify-center" style={{background:'linear-gradient(135deg,#667eea,#764ba2)'}}><span className="text-2xl">💰</span></div><div><p className="font-bold text-slate-800">Moza</p><p className="text-xs text-slate-400">@{user?.username}</p></div></div>
             <button onClick={()=>setSidebarOpen(false)}><FiX className="w-5 h-5 text-slate-400"/></button>
           </div>
           <nav className="space-y-1 flex-1">
